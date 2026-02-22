@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+
+# Data (lokal, nicht ins Repo)
+data/extracted/*.json
+data/embeddings/*.h5
+data/models/*.pt
+data/models/*.pkl
+data/models/*.json
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/
+
+# Jupyter
+*.ipynb_checkpoints/
+
+# PDFs (sensibel)
+urteile/
+judgments/

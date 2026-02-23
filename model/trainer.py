@@ -406,7 +406,13 @@ class LitigationTrainer:
             json.dump(self.history, f, indent=2)
 
     def load_checkpoint(self) -> bool:
-        """Load model and feature engineer from checkpoint."""
+        """Load model and feature engineer from checkpoint.
+
+        Returns False (and deletes the checkpoint) if the saved architecture is
+        incompatible with the current model configuration, e.g. when the number
+        of embedding sections changed (5 → 3).  The user will then be asked to
+        retrain the model.
+        """
         if not MODEL_CHECKPOINT.exists():
             return False
 
@@ -417,7 +423,17 @@ class LitigationTrainer:
             structured_dim=structured_dim,
             config=checkpoint.get("model_config", {}),
         )
-        self.model.load_state_dict(checkpoint["model_state_dict"])
+
+        try:
+            self.model.load_state_dict(checkpoint["model_state_dict"])
+        except RuntimeError:
+            # Checkpoint was trained with a different architecture (e.g. different
+            # number of embedding sections).  Remove it so the UI shows a clean
+            # "no model trained yet" state instead of crashing.
+            self.model = None
+            MODEL_CHECKPOINT.unlink(missing_ok=True)
+            return False
+
         self.model = self.model.to(self.device)
         self.model.eval()
 

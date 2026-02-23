@@ -183,8 +183,10 @@ class OpenAIExtractor:
         wait=wait_exponential(multiplier=1, min=2, max=30),
         stop=stop_after_attempt(5),
     )
-    def _get_embedding(self, text: str) -> list[float]:
+    def _get_embedding(self, text) -> list[float]:
         """Get embedding vector from text-embedding-3-large."""
+        if not isinstance(text, str):
+            text = json.dumps(text, ensure_ascii=False) if isinstance(text, (dict, list)) else str(text or "")
         if not text or not text.strip():
             return [0.0] * EMBEDDING_DIM
 
@@ -268,10 +270,24 @@ class OpenAIExtractor:
         except json.JSONDecodeError:
             raw_sections = {}
 
-        klaegervorbringen = raw_sections.get("klaegervorbringen", "")
-        beklagtenvorbringen = raw_sections.get("beklagtenvorbringen", "")
-        feststellungen = raw_sections.get("feststellungen", "")
-        beweisw_rdigung = raw_sections.get("beweisw_rdigung", "")
+        def _to_str(val) -> str:
+            """Ensure GPT response value is a plain string, not a nested dict/list."""
+            if isinstance(val, str):
+                return val
+            if isinstance(val, dict):
+                # GPT sometimes returns {"text": "..."} or similar
+                for k in ("text", "content", "value", "inhalt"):
+                    if k in val and isinstance(val[k], str):
+                        return val[k]
+                return json.dumps(val, ensure_ascii=False)
+            if val is None:
+                return ""
+            return str(val)
+
+        klaegervorbringen = _to_str(raw_sections.get("klaegervorbringen", ""))
+        beklagtenvorbringen = _to_str(raw_sections.get("beklagtenvorbringen", ""))
+        feststellungen = _to_str(raw_sections.get("feststellungen", ""))
+        beweisw_rdigung = _to_str(raw_sections.get("beweisw_rdigung", ""))
 
         # Step 2: Faktische Beweis-Beschreibung aus Beweiswürdigung + Feststellungen
         self._log("Generiere Beweis-Beschreibung (aufgenommene Beweise)...", 0.5)
@@ -297,7 +313,7 @@ class OpenAIExtractor:
         Generiert eine faktische, wertungsfreie Beschreibung der aufgenommenen
         Beweise aus den Abschnitten Beweiswürdigung und Feststellungen.
         """
-        if not feststellungen.strip() and not beweisw_rdigung.strip():
+        if not str(feststellungen).strip() and not str(beweisw_rdigung).strip():
             return "Keine Beweise aufgenommen."
 
         prompt = EVIDENCE_DESCRIPTION_PROMPT.format(

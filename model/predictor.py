@@ -149,13 +149,18 @@ class LitigationPredictor:
         # ML probabilities
         p_win_ml = ml_result["p_win"]
         p_partial_ml = ml_result["p_partial"]
-        p_loss_ml = ml_result["p_loss"]
 
-        # Combined success probability (for win + partial)
-        p_full_success = w_ml_norm * p_win_ml + w_jurist_norm * juristic_estimate
-        p_partial_success = w_ml_norm * p_partial_ml + w_jurist_norm * (juristic_estimate * 0.5)
-        p_failure = 1.0 - p_full_success - p_partial_success
-        p_failure = max(0.0, p_failure)
+        # Multiplikative Formel: juristic_estimate skaliert beide Anteile.
+        # Dadurch gilt: juristic=0 (rechtlich unschlüssig) → Gesamtwahrscheinlichkeit=0,
+        # unabhängig vom statistischen Modell. Außerdem ist p_full_success ≤ juristic_estimate.
+        #
+        #   p_full    = juristic * (w_ml * p_win_ml  + w_jur * 1.0)
+        #   p_partial = juristic * (w_ml * p_partial + w_jur * 0.5)
+        #
+        # Äquivalent zur alten additiven Formel bei juristic=1; konservativer dazwischen.
+        p_full_success = juristic_estimate * (w_ml_norm * p_win_ml + w_jurist_norm)
+        p_partial_success = juristic_estimate * (w_ml_norm * p_partial_ml + w_jurist_norm * 0.5)
+        p_failure = max(0.0, 1.0 - p_full_success - p_partial_success)
 
         # Weighted win probability
         ev_probability = p_full_success + 0.5 * p_partial_success

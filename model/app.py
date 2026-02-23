@@ -32,6 +32,7 @@ from config import (
     DEFENSE_TYPES,
     EMBEDDING_DIM,
     EMBEDDING_SECTION_LABELS,
+    KNN_THRESHOLD,
     MODEL_CHECKPOINT,
     OUTCOME_COLORS,
     OUTCOME_ICONS,
@@ -286,7 +287,7 @@ if st.session_state.predictor is None and MODEL_CHECKPOINT.exists():
 st.markdown(f"""
 <div class="app-header">
     <h1>Predictive Litigation Analytics</h1>
-    <div class="subtitle">Machine Learning Modell für österreichische Zivilprozesse &nbsp;·&nbsp; v{APP_VERSION} &nbsp;·&nbsp; LitigationClassifier (PyTorch)</div>
+    <div class="subtitle">Machine Learning Modell für österreichische Zivilprozesse &nbsp;·&nbsp; v{APP_VERSION} &nbsp;·&nbsp; kNN (< {KNN_THRESHOLD} Fälle) · LitigationClassifier (≥ {KNN_THRESHOLD} Fälle)</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -367,53 +368,64 @@ with tab_train:
 
     col_s1, col_s2, col_s3, col_s4 = st.columns(4)
     col_s1.metric("Trainingsdaten", n_cases)
-    col_s2.metric("Min. empfohlen", "20")
-    col_s3.metric("Gut (>50)", "50+")
-    col_s4.metric("Ideal (>100)", "100+")
+    col_s2.metric("kNN-Modus (< Fälle)", KNN_THRESHOLD)
+    col_s3.metric("Neuronales Netz (≥)", KNN_THRESHOLD)
+    col_s4.metric("Ideal", "100+")
 
-    if n_cases < 5:
+    if n_cases < 1:
         st.error(
-            f"Nicht genug Daten für Training. "
-            f"{n_cases}/5 beschriftete Fälle mit Embeddings vorhanden. "
-            "Bitte zuerst mehr Urteile mit dem Data Extractor verarbeiten."
+            "Keine beschrifteten Fälle mit Embeddings vorhanden. "
+            "Bitte zuerst Urteile mit dem Data Extractor verarbeiten."
         )
-    elif n_cases < 20:
-        st.warning(
-            f"Nur {n_cases} Fälle — Modell wird trainiert, "
-            "aber mit mehr Daten (>50) wird die Genauigkeit erheblich besser."
+    elif n_cases < KNN_THRESHOLD:
+        st.info(
+            f"{n_cases} Fälle — **kNN-Modus** (Ähnlichkeitssuche) wird verwendet. "
+            f"Ab {KNN_THRESHOLD} beschrifteten Fällen schaltet das System automatisch "
+            f"auf das neuronale Netz um."
         )
     else:
-        st.success(f"{n_cases} Fälle für das Training verfügbar.")
+        st.success(f"{n_cases} Fälle — neuronales Netz wird trainiert.")
 
     st.divider()
 
     # ── Architecture Info ────────────────────────────────────────────────────────
     with st.expander("Modell-Architektur", expanded=False):
         fe = FeatureEngineer()
-        st.markdown(f"""
-        **Netzwerk-Architektur** (optimiert für 50–300 Fälle):
-        - **Embedding Encoder** (3×): Linear(3072 → 256) + LayerNorm + GELU + Dropout → Linear(256 → 128)
-        - **Structured Encoder**: Linear({fe.feature_dim} → 64) + LayerNorm + GELU
-        - **Fusion Network**: Linear(448 → 128) + LayerNorm + GELU + Dropout → Linear(128 → 3)
-        - **Loss**: Focal Loss (γ=2) mit Klassen-Gewichtung
-        - **Optimizer**: AdamW mit ReduceLROnPlateau
-        - **Regularisierung**: LayerNorm, Dropout, Gradient Clipping, Early Stopping
-        - **Parameter gesamt**: ~2,56 Mio. (reduziert von ~5,7 Mio. für bessere Generalisierung)
+        if n_cases < KNN_THRESHOLD:
+            st.markdown(f"""
+            **Aktiver Modus: k-Nearest-Neighbour** (< {KNN_THRESHOLD} Fälle)
+            - **Methode**: Kosinus-Ähnlichkeit auf verketteten Text-Embeddings (3 × 3072 = 9.216 dim)
+            - **k**: min(5, Trainingsgröße) nächste Nachbarn, gewichtetes Soft-Voting
+            - **Parameter**: 0 — kein Gradientenverfahren, kein Training
+            - **Vorteil**: sofort einsatzbereit, kein Overfitting-Risiko
 
-        **Input-Embeddings (3 Abschnitte):**
-        - **Kläger-Vorbringen**: Was begehrt der Kläger?
-        - **Beklagten-Vorbringen**: Welche Einwendungen macht der Beklagte?
-        - **Aufgenommene Beweise**: Faktische Beschreibung der aufgenommenen Beweise
-          (Art, Anzahl, welche Partei — ohne Bewertung; aus Beweiswürdigung + Feststellungen generiert)
-        - 3 × 128 = 384 dim nach Encodierung + 64 dim strukturiert = **448 dim Fusion-Input**
+            Ab **{KNN_THRESHOLD} beschrifteten Fällen** schaltet das System automatisch auf das
+            neuronale Netz um.
+            """)
+        else:
+            st.markdown(f"""
+            **Aktiver Modus: Neuronales Netz** (≥ {KNN_THRESHOLD} Fälle)
+            - **Embedding Encoder** (3×): Linear(3072 → 256) + LayerNorm + GELU + Dropout → Linear(256 → 128)
+            - **Structured Encoder**: Linear({fe.feature_dim} → 64) + LayerNorm + GELU
+            - **Fusion Network**: Linear(448 → 128) + LayerNorm + GELU + Dropout → Linear(128 → 3)
+            - **Loss**: Focal Loss (γ=2) mit Klassen-Gewichtung
+            - **Optimizer**: AdamW mit ReduceLROnPlateau
+            - **Regularisierung**: LayerNorm, Dropout, Gradient Clipping, Early Stopping
+            - **Parameter gesamt**: ~2,56 Mio.
 
-        **Nicht im Input** (sind Ergebnis der richterlichen Entscheidungsfindung):
-        Feststellungen, Beweiswürdigung, Rechtliche Beurteilung
+            **Input-Embeddings (3 Abschnitte):**
+            - **Kläger-Vorbringen**: Was begehrt der Kläger?
+            - **Beklagten-Vorbringen**: Welche Einwendungen macht der Beklagte?
+            - **Aufgenommene Beweise**: Faktische Beschreibung der aufgenommenen Beweise
+              (Art, Anzahl, welche Partei — ohne Bewertung)
+            - 3 × 128 = 384 dim nach Encodierung + 64 dim strukturiert = **448 dim Fusion-Input**
 
-        **Strukturierte Features:** {fe.feature_dim} dim (Streitwert, Anspruchsart, Einwendungen, ...)
+            **Nicht im Input**: Feststellungen, Beweiswürdigung, Rechtliche Beurteilung
 
-        **Output:** 3 Klassen (Unterliegen / Teilweise / Obsiegen)
-        """)
+            **Strukturierte Features:** {fe.feature_dim} dim (Streitwert, Anspruchsart, Einwendungen, ...)
+
+            **Output:** 3 Klassen (Unterliegen / Teilweise / Obsiegen)
+            """)
 
     # ── Training Controls ────────────────────────────────────────────────────────
     col_btn1, col_btn2 = st.columns([2, 1])
@@ -422,7 +434,7 @@ with tab_train:
         train_btn = st.button(
             f"Training starten  ({n_cases} Fälle)",
             type="primary",
-            disabled=n_cases < 3 or st.session_state.training_running,
+            disabled=n_cases < 1 or st.session_state.training_running,
             use_container_width=True,
         )
 
@@ -435,7 +447,7 @@ with tab_train:
                 st.rerun()
 
     # ── Training Progress ────────────────────────────────────────────────────────
-    if train_btn and not st.session_state.training_running and n_cases >= 3:
+    if train_btn and not st.session_state.training_running and n_cases >= 1:
         st.session_state.training_running = True
         st.session_state.training_log = []
 
@@ -531,17 +543,28 @@ with tab_train:
                     fig.update_yaxes(showgrid=True, gridcolor="#dddddd", gridwidth=1)
                     chart_container.plotly_chart(fig, use_container_width=True)
 
+            elif phase == "knn_fitted":
+                st.session_state.training_log.append(
+                    f'[OK]  kNN-Index erstellt: {kwargs["n_cases"]} Fälle | k={kwargs["k"]}'
+                )
+
             elif phase == "early_stop":
                 st.session_state.training_log.append(
                     f'[WARN] {kwargs.get("message", "Early stopping")}'
                 )
 
             elif phase == "done":
-                st.session_state.training_log.append(
-                    f'[OK]  FERTIG — Beste Val-Accuracy: {kwargs["best_val_acc"]:.1%} | '
-                    f'Epochen: {kwargs["epochs_trained"]} | '
-                    f'Zeit: {kwargs["training_time"]:.1f}s'
-                )
+                if kwargs.get("model_type") == "knn":
+                    st.session_state.training_log.append(
+                        f'[OK]  FERTIG — kNN-Modell ({kwargs.get("n_cases", 0)} Fälle) | '
+                        f'Zeit: {kwargs["training_time"]:.1f}s'
+                    )
+                else:
+                    st.session_state.training_log.append(
+                        f'[OK]  FERTIG — Beste Val-Accuracy: {kwargs["best_val_acc"]:.1%} | '
+                        f'Epochen: {kwargs["epochs_trained"]} | '
+                        f'Zeit: {kwargs["training_time"]:.1f}s'
+                    )
 
         trainer = LitigationTrainer(config=custom_config, progress_callback=progress_cb)
 
@@ -556,11 +579,18 @@ with tab_train:
             progress_bar.empty()
             status_text.empty()
 
-            st.success(
-                f"Training abgeschlossen. "
-                f"Beste Validierungs-Accuracy: **{history['best_val_acc']:.1%}** "
-                f"(Epoche {history['best_epoch']})"
-            )
+            if history.get("model_type") == "knn":
+                n_knn = history.get("n_training_cases", 0)
+                st.success(
+                    f"kNN-Modell bereit. {n_knn} Fälle indexiert. "
+                    f"Für neuronales Netz: ≥ {KNN_THRESHOLD} beschriftete Fälle erforderlich."
+                )
+            else:
+                st.success(
+                    f"Training abgeschlossen. "
+                    f"Beste Validierungs-Accuracy: **{history['best_val_acc']:.1%}** "
+                    f"(Epoche {history['best_epoch']})"
+                )
             st.markdown(
                 '<div class="note-box">Wechseln Sie zum Tab "Evaluation" für detaillierte Auswertung.</div>',
                 unsafe_allow_html=True,
@@ -586,7 +616,18 @@ with tab_train:
         with open(TRAINING_HISTORY_FILE) as f:
             hist = json.load(f)
 
-        if hist.get("train_loss"):
+        if hist.get("model_type") == "knn":
+            st.markdown("**Aktives Modell: k-Nearest-Neighbour**")
+            col_h1, col_h2 = st.columns(2)
+            col_h1.metric("Indexierte Fälle", hist.get("n_training_cases", "—"))
+            col_h2.metric("Trainingszeit", f"{hist.get('training_time_sec', 0):.1f}s")
+            st.info(
+                f"kNN-Modus aktiv (< {KNN_THRESHOLD} Trainingsfälle). "
+                f"Sobald ≥ {KNN_THRESHOLD} beschriftete Fälle vorhanden sind, "
+                f"wird automatisch das neuronale Netz verwendet."
+            )
+
+        elif hist.get("train_loss"):
             st.markdown("**Letztes Training**")
             col_h1, col_h2, col_h3, col_h4 = st.columns(4)
             col_h1.metric("Beste Val-Accuracy", f"{hist.get('best_val_acc', 0):.1%}")
@@ -1126,7 +1167,7 @@ st.markdown(
     f"<div style='text-align:center;color:#888888;font-size:0.75rem;"
     f"font-family:IBM Plex Mono,monospace;letter-spacing:0.04em'>"
     f"Predictive Litigation Analytics &nbsp;·&nbsp; v{APP_VERSION} &nbsp;·&nbsp; "
-    f"LitigationClassifier (PyTorch) &nbsp;·&nbsp; "
+    f"kNN (< {KNN_THRESHOLD} Fälle) · LitigationClassifier (≥ {KNN_THRESHOLD} Fälle) &nbsp;·&nbsp; "
     f"Device: {'CUDA' if __import__('torch').cuda.is_available() else 'CPU'}"
     f"</div>",
     unsafe_allow_html=True,

@@ -17,6 +17,8 @@ from torch.utils.data import DataLoader
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
     ENCODER_FILE,
+    KNN_FILE,
+    KNN_THRESHOLD,
     MODEL_CHECKPOINT,
     SCALER_FILE,
     TRAINING_CONFIG,
@@ -29,6 +31,7 @@ from model.feature_engineer import (
     compute_class_weights,
     prepare_dataset,
 )
+from model.knn_predictor import KNNLitigationPredictor
 from model.neural_net import FocalLoss, LitigationClassifier
 
 
@@ -70,6 +73,7 @@ class LitigationTrainer:
         self.progress_callback = progress_callback or (lambda **kw: None)
 
         self.model: Optional[LitigationClassifier] = None
+        self.knn: Optional[KNNLitigationPredictor] = None
         self.feature_engineer = FeatureEngineer()
         self.history: dict = {
             "train_loss": [],
@@ -130,6 +134,18 @@ class LitigationTrainer:
         """
         torch.manual_seed(self.config["random_seed"])
         np.random.seed(self.config["random_seed"])
+
+        # ── Adaptive model selection ──────────────────────────────────────────────
+        n_labeled = sum(
+            1 for c in cases
+            if c["structured"].get("outcome") is not None
+            and c["case_id"] in embeddings_dict
+        )
+        if n_labeled < KNN_THRESHOLD:
+            return self._train_knn(cases, embeddings_dict, save_checkpoint)
+
+        # Neural network path — clear any previous kNN
+        self.knn = None
 
         start_time = time.time()
 
@@ -298,6 +314,77 @@ class LitigationTrainer:
 
         return self.history
 
+    def _train_knn(
+        self,
+        cases: list[dict],
+        embeddings_dict: dict,
+        save_checkpoint: bool,
+    ) -> dict:
+        """Train kNN model for small datasets (< KNN_THRESHOLD labeled cases)."""
+        import time as _time
+        start_time = _time.time()
+
+        self._log(
+            phase="preparing",
+            message=f"kNN-Modus (< {KNN_THRESHOLD} Fälle) — Daten werden vorbereitet...",
+        )
+
+        # Fit scaler on structured features (needed for inference path)
+        self.feature_engineer.fit_transform(cases)
+        feature_dim = self.feature_engineer.feature_dim
+
+        labeled = [
+            c for c in cases
+            if c["structured"].get("outcome") is not None
+            and c["case_id"] in embeddings_dict
+        ]
+        n = len(labeled)
+
+        self._log(
+            phase="prepared",
+            train_size=n,
+            val_size=0,
+            feature_dim=feature_dim,
+        )
+
+        if n < 1:
+            raise ValueError("Keine gültigen Trainingsfälle mit Outcome-Label und Embeddings gefunden.")
+
+        k = min(KNNLitigationPredictor.DEFAULT_K, n)
+        self.knn = KNNLitigationPredictor(k=k)
+        self.knn.fit(cases, embeddings_dict)
+        self.model = None
+
+        self._log(phase="knn_fitted", n_cases=n, k=k)
+
+        elapsed = _time.time() - start_time
+        self.history = {
+            "model_type": "knn",
+            "n_training_cases": n,
+            "best_val_acc": 0.0,
+            "best_epoch": 0,
+            "training_time_sec": elapsed,
+            "epochs_trained": 0,
+            "train_loss": [],
+            "val_loss": [],
+            "train_acc": [],
+            "val_acc": [],
+        }
+
+        if save_checkpoint:
+            self.save_checkpoint()
+
+        self._log(
+            phase="done",
+            best_val_acc=0.0,
+            epochs_trained=0,
+            training_time=elapsed,
+            model_type="knn",
+            n_cases=n,
+        )
+
+        return self.history
+
     def _evaluate(
         self,
         model: LitigationClassifier,
@@ -334,6 +421,9 @@ class LitigationTrainer:
         Full evaluation on the complete dataset.
         Returns per-class metrics.
         """
+        if self.knn is not None:
+            return self._evaluate_full_knn(cases, embeddings_dict)
+
         if self.model is None:
             raise RuntimeError("Model not trained/loaded.")
 
@@ -383,22 +473,68 @@ class LitigationTrainer:
             "probabilities": all_probs.tolist(),
         }
 
-    def save_checkpoint(self) -> None:
-        """Save model, feature engineer, and training history."""
-        if self.model is None:
-            return
+    def _evaluate_full_knn(self, cases: list[dict], embeddings_dict: dict) -> dict:
+        """Evaluate kNN predictor on the full labeled dataset."""
+        all_preds, all_labels, all_probs = [], [], []
+        for case in cases:
+            case_id = case["case_id"]
+            outcome = case["structured"].get("outcome")
+            if outcome is None or case_id not in embeddings_dict:
+                continue
+            result = self.knn.predict(embeddings_dict[case_id])
+            all_preds.append(result["predicted_outcome"])
+            all_labels.append(int(outcome))
+            all_probs.append([result["p_loss"], result["p_partial"], result["p_win"]])
 
+        if not all_preds:
+            return {"accuracy": 0.0, "per_class": {}, "predictions": [], "labels": [], "probabilities": []}
+
+        all_preds = np.array(all_preds)
+        all_labels = np.array(all_labels)
+        all_probs = np.array(all_probs)
+
+        per_class = {}
+        for cls in range(3):
+            tp = int(((all_preds == cls) & (all_labels == cls)).sum())
+            fp = int(((all_preds == cls) & (all_labels != cls)).sum())
+            fn = int(((all_preds != cls) & (all_labels == cls)).sum())
+            precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+            recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            f1 = (2 * precision * recall / (precision + recall)
+                  if (precision + recall) > 0 else 0.0)
+            per_class[cls] = {"precision": precision, "recall": recall, "f1": f1}
+
+        return {
+            "accuracy": float((all_preds == all_labels).mean()),
+            "per_class": per_class,
+            "predictions": all_preds.tolist(),
+            "labels": all_labels.tolist(),
+            "probabilities": all_probs.tolist(),
+        }
+
+    def save_checkpoint(self) -> None:
+        """Save model (kNN or NN), feature engineer, and training history."""
         MODEL_CHECKPOINT.parent.mkdir(parents=True, exist_ok=True)
 
-        torch.save(
-            {
-                "model_state_dict": self.model.state_dict(),
-                "model_config": self.model.config,
-                "structured_dim": self.model.structured_encoder.encoder[0].in_features,
-                "history": self.history,
-            },
-            MODEL_CHECKPOINT,
-        )
+        if self.knn is not None:
+            torch.save(
+                {"model_type": "knn", "history": self.history},
+                MODEL_CHECKPOINT,
+            )
+            self.knn.save(KNN_FILE)
+        elif self.model is not None:
+            torch.save(
+                {
+                    "model_type": "neural_net",
+                    "model_state_dict": self.model.state_dict(),
+                    "model_config": self.model.config,
+                    "structured_dim": self.model.structured_encoder.encoder[0].in_features,
+                    "history": self.history,
+                },
+                MODEL_CHECKPOINT,
+            )
+        else:
+            return
 
         self.feature_engineer.save(SCALER_FILE)
 
@@ -406,7 +542,7 @@ class LitigationTrainer:
             json.dump(self.history, f, indent=2)
 
     def load_checkpoint(self) -> bool:
-        """Load model and feature engineer from checkpoint.
+        """Load model (kNN or NN) and feature engineer from checkpoint.
 
         Returns False (and deletes the checkpoint) if the saved architecture is
         incompatible with the current model configuration, e.g. when the number
@@ -417,8 +553,22 @@ class LitigationTrainer:
             return False
 
         checkpoint = torch.load(MODEL_CHECKPOINT, map_location=self.device)
-        structured_dim = checkpoint["structured_dim"]
+        model_type = checkpoint.get("model_type", "neural_net")
 
+        # ── kNN checkpoint ────────────────────────────────────────────────────
+        if model_type == "knn":
+            if not KNN_FILE.exists():
+                return False
+            self.knn = KNNLitigationPredictor()
+            self.knn.load(KNN_FILE)
+            self.model = None
+            self.history = checkpoint.get("history", {})
+            if SCALER_FILE.exists():
+                self.feature_engineer.load(SCALER_FILE)
+            return True
+
+        # ── Neural network checkpoint ─────────────────────────────────────────
+        structured_dim = checkpoint["structured_dim"]
         self.model = LitigationClassifier(
             structured_dim=structured_dim,
             config=checkpoint.get("model_config", {}),
@@ -436,7 +586,7 @@ class LitigationTrainer:
 
         self.model = self.model.to(self.device)
         self.model.eval()
-
+        self.knn = None
         self.history = checkpoint.get("history", {})
 
         if SCALER_FILE.exists():

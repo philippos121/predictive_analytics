@@ -21,6 +21,12 @@ MODEL_CHECKPOINT = MODELS_DIR / "litigation_model.pt"
 SCALER_FILE = MODELS_DIR / "feature_scaler.pkl"
 ENCODER_FILE = MODELS_DIR / "label_encoders.pkl"
 TRAINING_HISTORY_FILE = MODELS_DIR / "training_history.json"
+KNN_FILE = MODELS_DIR / "litigation_knn.pkl"
+
+# ─── Adaptive Model Selection ────────────────────────────────────────────────────
+# Below KNN_THRESHOLD labeled cases → k-Nearest-Neighbour (cosine similarity)
+# At or above                       → LitigationClassifier neural network
+KNN_THRESHOLD = 50
 
 # ─── OpenAI Configuration ───────────────────────────────────────────────────────
 # NOTE: "GPT 5.2 mini" does not exist as an OpenAI model (as of 2026).

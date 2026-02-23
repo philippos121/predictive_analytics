@@ -62,6 +62,8 @@ class LitigationPredictor:
         """
         Predict outcome probabilities for a new case.
 
+        Routes to kNN or neural network depending on which model is loaded.
+
         Args:
             case_dict: Case metadata dict (same structure as training data)
             embeddings: {section_name: embedding_vector}
@@ -69,6 +71,10 @@ class LitigationPredictor:
         Returns:
             dict with probabilities, predicted class, confidence
         """
+        # kNN path — no structured features needed
+        if self.trainer.knn is not None:
+            return self.trainer.knn.predict(embeddings)
+
         if self.model is None:
             raise RuntimeError("Kein trainiertes Modell verfügbar.")
 
@@ -198,8 +204,11 @@ class LitigationPredictor:
     def get_feature_importance(self) -> Optional[dict]:
         """
         Approximate feature importance via gradient analysis.
-        Only available if model is trained.
+        Only available if neural network is trained (not for kNN mode).
         """
+        if self.trainer.knn is not None:
+            return None
+
         if self.model is None:
             return None
 

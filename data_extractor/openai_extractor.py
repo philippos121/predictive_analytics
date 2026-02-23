@@ -110,12 +110,45 @@ Entferne alle Namen von Personen (Richter, Parteien, Anwälte) - ersetze sie mit
   "klaegervorbringen": "Vollständiger Text des Kläger-Vorbringens (anonymisiert)",
   "beklagtenvorbringen": "Vollständiger Text des Beklagten-Vorbringens (anonymisiert)",
   "feststellungen": "Vollständiger Text der Sachverhaltsfeststellungen (anonymisiert)",
-  "beweisw_rdigung": "Vollständiger Text der Beweiswürdigung (anonymisiert)",
-  "rechtliche_beurteilung": "Vollständiger Text der rechtlichen Beurteilung (anonymisiert)"
+  "beweisw_rdigung": "Vollständiger Text der Beweiswürdigung (anonymisiert)"
 }}
 
 URTEILSTEXT:
 {text}"""
+
+
+# ─── Evidence Description Generation Prompt ──────────────────────────────────────
+# Generiert eine faktische Beschreibung der aufgenommenen (!) Beweise aus
+# Beweiswürdigung + Feststellungen — ohne eigene Bewertung.
+# Zweck: Dieses Embedding kodiert welche Beweismittel das Gericht tatsächlich
+# aufgenommen hat, als neutralen Input für die Outcome-Prognose.
+
+EVIDENCE_DESCRIPTION_PROMPT = """Du bist ein österreichischer Zivilrechtsspezialist.
+Beschreibe auf Basis der folgenden Textabschnitte (Beweiswürdigung und Feststellungen)
+ausschließlich faktisch und ohne eigene Bewertung, welche Beweise das Gericht
+tatsächlich aufgenommen hat.
+
+Gib ausschließlich ein JSON-Objekt zurück:
+{{
+  "aufgenommene_beweise": "Sachliche Beschreibung der aufgenommenen Beweise"
+}}
+
+Regeln:
+- Beschreibe Art und Anzahl der Beweismittel (z.B. 'drei Zeugenvernehmungen',
+  'zwei Urkunden', 'ein Sachverständigengutachten')
+- Gib an, welche Partei welches Beweismittel beigebracht hat
+- Gib an, ob Beweismittel das Vorbringen einer Partei stützen oder widerlegen
+  (nur soweit aus Beweiswürdigung/Feststellungen eindeutig hervorgeht)
+- KEINE eigene rechtliche Würdigung, KEINE Schlussfolgerungen
+- KEINE Namen von Personen — ersetze sie mit [KLÄGER], [BEKLAGTER], [ZEUGE_1] usw.
+- Wenn keine Beweise aufgenommen wurden, schreibe 'Keine Beweise aufgenommen.'
+- Maximale Länge: 400 Wörter
+
+BEWEISWÜRDIGUNG:
+{beweisw_rdigung}
+
+FESTSTELLUNGEN:
+{feststellungen}"""
 
 
 class OpenAIExtractor:
@@ -201,14 +234,21 @@ class OpenAIExtractor:
 
     def extract_text_sections(self, text: str) -> dict[str, str]:
         """
-        Extract and anonymize text sections for embedding.
-        Falls back to automatic section splitting if needed.
+        Extract and anonymize text sections, then generate the evidence description.
+
+        Pipeline:
+        1. GPT extrahiert klaegervorbringen, beklagtenvorbringen, feststellungen,
+           beweisw_rdigung aus dem Urteilstext (anonymisiert).
+        2. GPT generiert aufgenommene_beweise — eine faktische, wertungsfreie
+           Beschreibung der tatsächlich aufgenommenen Beweise — aus feststellungen
+           und beweisw_rdigung.
+
+        Rückgabe enthält alle Zwischenabschnitte sowie aufgenommene_beweise.
+        generate_embeddings() verwendet nur die drei Abschnitte aus EMBEDDING_SECTIONS.
         """
-        self._log("Extrahiere Textabschnitte für Embeddings...", 0.4)
+        self._log("Extrahiere Textabschnitte aus Urteil...", 0.4)
 
-        # For longer texts, we split into chunks and process
         truncated_text = text[:20000]
-
         prompt = SECTION_EXTRACTION_PROMPT.format(text=truncated_text)
 
         messages = [
@@ -224,15 +264,64 @@ class OpenAIExtractor:
         time.sleep(OPENAI_REQUEST_DELAY_SEC)
 
         try:
-            sections = json.loads(raw)
+            raw_sections = json.loads(raw)
         except json.JSONDecodeError:
-            sections = {}
+            raw_sections = {}
 
-        # Ensure all sections exist
+        klaegervorbringen = raw_sections.get("klaegervorbringen", "")
+        beklagtenvorbringen = raw_sections.get("beklagtenvorbringen", "")
+        feststellungen = raw_sections.get("feststellungen", "")
+        beweisw_rdigung = raw_sections.get("beweisw_rdigung", "")
+
+        # Step 2: Faktische Beweis-Beschreibung aus Beweiswürdigung + Feststellungen
+        self._log("Generiere Beweis-Beschreibung (aufgenommene Beweise)...", 0.5)
+        aufgenommene_beweise = self._generate_evidence_description(
+            feststellungen=feststellungen,
+            beweisw_rdigung=beweisw_rdigung,
+        )
+
         return {
-            sec: sections.get(sec, "")
-            for sec in EMBEDDING_SECTIONS
+            "klaegervorbringen": klaegervorbringen,
+            "beklagtenvorbringen": beklagtenvorbringen,
+            "feststellungen": feststellungen,
+            "beweisw_rdigung": beweisw_rdigung,
+            "aufgenommene_beweise": aufgenommene_beweise,
         }
+
+    def _generate_evidence_description(
+        self,
+        feststellungen: str,
+        beweisw_rdigung: str,
+    ) -> str:
+        """
+        Generiert eine faktische, wertungsfreie Beschreibung der aufgenommenen
+        Beweise aus den Abschnitten Beweiswürdigung und Feststellungen.
+        """
+        if not feststellungen.strip() and not beweisw_rdigung.strip():
+            return "Keine Beweise aufgenommen."
+
+        prompt = EVIDENCE_DESCRIPTION_PROMPT.format(
+            feststellungen=feststellungen[:8000],
+            beweisw_rdigung=beweisw_rdigung[:8000],
+        )
+
+        messages = [
+            {
+                "role": "system",
+                "content": "Du bist ein österreichischer Zivilrechtsspezialist. "
+                "Gib ausschließlich JSON zurück.",
+            },
+            {"role": "user", "content": prompt},
+        ]
+
+        raw = self._chat_completion(messages)
+        time.sleep(OPENAI_REQUEST_DELAY_SEC)
+
+        try:
+            result = json.loads(raw)
+            return result.get("aufgenommene_beweise", "Keine Beweise aufgenommen.")
+        except json.JSONDecodeError:
+            return "Keine Beweise aufgenommen."
 
     def generate_embeddings(self, sections: dict[str, str]) -> dict[str, list[float]]:
         """
@@ -285,6 +374,8 @@ class OpenAIExtractor:
     def embed_new_case_text(self, case_sections: dict[str, str]) -> dict[str, list[float]]:
         """
         Embed a new case's text sections for prediction.
+        case_sections must contain: klaegervorbringen, beklagtenvorbringen,
+        aufgenommene_beweise.
         Used when applying the model to new cases.
         """
         return self.generate_embeddings(case_sections)

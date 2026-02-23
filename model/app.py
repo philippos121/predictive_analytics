@@ -392,16 +392,24 @@ with tab_train:
         fe = FeatureEngineer()
         st.markdown(f"""
         **Netzwerk-Architektur:**
-        - **Embedding Encoder** (5×): Linear(3072 → 512) + LayerNorm + GELU + Dropout → Linear(512 → 256)
+        - **Embedding Encoder** (3×): Linear(3072 → 512) + LayerNorm + GELU + Dropout → Linear(512 → 256)
         - **Structured Encoder**: Linear({fe.feature_dim} → 64) + LayerNorm + GELU
-        - **Fusion Network**: Linear(1344 → 512) → Linear(512 → 256) → Linear(256 → 128) → Linear(128 → 3)
+        - **Fusion Network**: Linear(832 → 512) → Linear(512 → 256) → Linear(256 → 128) → Linear(128 → 3)
         - **Loss**: Focal Loss (γ=2) mit Klassen-Gewichtung
         - **Optimizer**: AdamW mit ReduceLROnPlateau
         - **Regularisierung**: LayerNorm, Dropout, Gradient Clipping, Early Stopping
 
-        **Input-Dimensionen:**
-        - 5 Textabschnitt-Embeddings: 5 × 3072 = 15.360 dim
-        - Strukturierte Features: {fe.feature_dim} dim (Streitwert, Anspruchsart, Einwendungen, ...)
+        **Input-Embeddings (3 Abschnitte):**
+        - **Kläger-Vorbringen**: Was begehrt der Kläger?
+        - **Beklagten-Vorbringen**: Welche Einwendungen macht der Beklagte?
+        - **Aufgenommene Beweise**: Faktische Beschreibung der aufgenommenen Beweise
+          (Art, Anzahl, welche Partei — ohne Bewertung; aus Beweiswürdigung + Feststellungen generiert)
+        - 3 × 3072 = 9.216 dim Embedding-Input
+
+        **Nicht im Input** (sind Ergebnis der richterlichen Entscheidungsfindung):
+        Feststellungen, Beweiswürdigung, Rechtliche Beurteilung
+
+        **Strukturierte Features:** {fe.feature_dim} dim (Streitwert, Anspruchsart, Einwendungen, ...)
 
         **Output:** 3 Klassen (Unterliegen / Teilweise / Obsiegen)
         """)
@@ -769,7 +777,7 @@ with tab_predict:
                             DEFENSE_LABELS.get(d, d), key=f"pred_ew_{d}"
                         )
 
-                st.markdown("**Textvorbringen** (für Embedding-Vektoren)")
+                st.markdown("**Textvorbringen & Beweise** (für Embedding-Vektoren)")
                 p_klaeger_text = st.text_area(
                     "Kläger-Vorbringen",
                     placeholder="Beschreiben Sie das Vorbringen des Klägers...",
@@ -780,9 +788,22 @@ with tab_predict:
                     placeholder="Einwendungen und Vorbringen des Beklagten...",
                     height=80,
                 )
-                p_rechtl = st.text_area(
-                    "Relevante Rechtsfragen (optional)",
-                    height=60,
+                p_aufgenommene_beweise = st.text_area(
+                    "Aufgenommene Beweise",
+                    placeholder=(
+                        "Faktische Beschreibung der tatsächlich aufgenommenen Beweise — "
+                        "ohne eigene Bewertung. Beispiel: 'Drei Zeugen bestätigten "
+                        "übereinstimmend das klägerische Vorbringen; zwei Urkunden "
+                        "(Rechnungen) sprechen dagegen; ein bautechnisches "
+                        "Sachverständigengutachten liegt vor.'"
+                    ),
+                    height=100,
+                    help=(
+                        "Beschreiben Sie Art und Anzahl der Beweismittel (Zeugen, "
+                        "Urkunden, Sachverständige), welche Partei sie beigebracht hat "
+                        "und ob sie das jeweilige Vorbringen stützen oder widerlegen. "
+                        "Keine rechtliche Bewertung."
+                    ),
                 )
 
                 predict_btn = st.form_submit_button(
@@ -806,13 +827,11 @@ with tab_predict:
             sections = {
                 "klaegervorbringen": p_klaeger_text,
                 "beklagtenvorbringen": p_beklagter_text,
-                "feststellungen": "",
-                "beweisw_rdigung": "",
-                "rechtliche_beurteilung": p_rechtl,
+                "aufgenommene_beweise": p_aufgenommene_beweise,
             }
 
             embeddings = {}
-            if st.session_state.openai_api_key and (p_klaeger_text or p_beklagter_text):
+            if st.session_state.openai_api_key and (p_klaeger_text or p_beklagter_text or p_aufgenommene_beweise):
                 with st.spinner("Generiere Embeddings via OpenAI..."):
                     try:
                         from data_extractor.openai_extractor import OpenAIExtractor

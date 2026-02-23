@@ -105,20 +105,25 @@ DEFENSE_LABELS = {
 }
 
 # ─── Text Sections for Embeddings ───────────────────────────────────────────────
+# Nur diese drei Abschnitte fließen als Embeddings ins Modell ein:
+# - Kläger-Vorbringen: Was begehrt der Kläger?
+# - Beklagten-Vorbringen: Welche Einwendungen macht der Beklagte?
+# - Aufgenommene Beweise: Welche Beweise wurden vom Gericht aufgenommen?
+#   (faktische Beschreibung ohne Bewertung, wird per GPT aus Beweiswürdigung
+#    und Feststellungen generiert)
+#
+# Beweiswürdigung, Feststellungen und rechtliche Beurteilung sind KEIN Input —
+# sie sind Teil des Outputs bzw. der richterlichen Entscheidungsfindung.
 EMBEDDING_SECTIONS = [
     "klaegervorbringen",
     "beklagtenvorbringen",
-    "feststellungen",
-    "beweisw_rdigung",
-    "rechtliche_beurteilung",
+    "aufgenommene_beweise",
 ]
 
 EMBEDDING_SECTION_LABELS = {
     "klaegervorbringen": "Kläger-Vorbringen",
     "beklagtenvorbringen": "Beklagten-Vorbringen",
-    "feststellungen": "Feststellungen",
-    "beweisw_rdigung": "Beweiswürdigung",
-    "rechtliche_beurteilung": "Rechtliche Beurteilung",
+    "aufgenommene_beweise": "Aufgenommene Beweise",
 }
 
 # ─── Neural Network Configuration ───────────────────────────────────────────────

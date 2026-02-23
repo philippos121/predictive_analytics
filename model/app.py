@@ -1,7 +1,7 @@
 """
 Predictive Litigation Analytics — Model Training & Prediction UI
 
-Sophisticated Streamlit interface for:
+Streamlit interface for:
 1. Training the neural network on extracted case data
 2. Evaluating model performance
 3. Predicting outcomes for new cases
@@ -48,7 +48,7 @@ from model.trainer import LitigationTrainer
 
 st.set_page_config(
     page_title="Predictive Litigation Analytics",
-    page_icon="🔮",
+    page_icon=None,
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -57,91 +57,196 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;600&display=swap');
+
     :root {
-        --primary: #1a365d;
-        --secondary: #2d6a9f;
-        --accent: #c9a227;
-        --success: #27ae60;
-        --warning: #f39c12;
-        --danger: #e74c3c;
+        --col-bg:       #ffffff;
+        --col-surface:  #f5f5f5;
+        --col-border:   #cccccc;
+        --col-text:     #1a1a1a;
+        --col-muted:    #666666;
+        --col-primary:  #1c3a5e;
+        --col-accent:   #2a6496;
+        --col-success:  #2c6e49;
+        --col-warning:  #7d5a00;
+        --col-danger:   #8b1a1a;
+        --font-mono:    'IBM Plex Mono', 'Courier New', monospace;
+        --font-sans:    'IBM Plex Sans', 'Helvetica Neue', sans-serif;
     }
-    .main .block-container { padding-top: 1rem; padding-bottom: 2rem; }
 
+    html, body, [class*="css"] { font-family: var(--font-sans); }
+
+    .main .block-container {
+        padding-top: 1.2rem;
+        padding-bottom: 2rem;
+        max-width: 1400px;
+    }
+
+    /* ── Header ── */
     .app-header {
-        background: linear-gradient(135deg, #1a365d 0%, #4a235a 100%);
-        color: white;
-        padding: 1.5rem 2rem;
-        border-radius: 12px;
+        border-left: 4px solid var(--col-primary);
+        padding: 0.8rem 1.2rem;
         margin-bottom: 1.5rem;
-        box-shadow: 0 4px 15px rgba(26, 54, 93, 0.4);
+        background: var(--col-surface);
+        border-top: 1px solid var(--col-border);
+        border-right: 1px solid var(--col-border);
+        border-bottom: 1px solid var(--col-border);
     }
-    .app-header h1 { color: white; margin: 0; font-size: 1.8rem; }
-    .app-header p { color: #d4b4e0; margin: 0.3rem 0 0 0; }
-
-    .prob-bar-container { background: #eee; border-radius: 20px; height: 24px; overflow: hidden; margin: 4px 0; }
-    .prob-bar { height: 100%; border-radius: 20px; display: flex; align-items: center; padding-left: 8px; color: white; font-weight: bold; font-size: 0.85rem; transition: width 0.5s ease; }
-    .prob-win { background: linear-gradient(90deg, #27ae60, #2ecc71); }
-    .prob-partial { background: linear-gradient(90deg, #e67e22, #f39c12); }
-    .prob-loss { background: linear-gradient(90deg, #c0392b, #e74c3c); }
-
-    .ev-card {
-        background: white;
-        border-radius: 12px;
-        padding: 1.5rem;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-        border: 2px solid transparent;
-        text-align: center;
-    }
-    .ev-card.positive { border-color: #27ae60; }
-    .ev-card.negative { border-color: #e74c3c; }
-    .ev-card.neutral { border-color: #f39c12; }
-
-    .metric-large { font-size: 2.5rem; font-weight: bold; }
-    .metric-label { font-size: 0.9rem; color: #666; margin-top: 4px; }
-
-    .training-log {
-        background: #1e1e1e;
-        color: #dcdcdc;
-        border-radius: 8px;
-        padding: 1rem;
-        font-family: monospace;
-        font-size: 0.85rem;
-        height: 300px;
-        overflow-y: auto;
-    }
-    .log-line { margin: 2px 0; }
-    .log-success { color: #6bcb77; }
-    .log-warning { color: #f4d35e; }
-    .log-error { color: #e74c3c; }
-    .log-info { color: #4cc9f0; }
-
-    .section-header {
+    .app-header h1 {
+        color: var(--col-primary);
+        margin: 0;
         font-size: 1.4rem;
-        font-weight: 700;
-        color: #1a365d;
-        border-bottom: 3px solid #c9a227;
-        padding-bottom: 0.3rem;
-        margin-bottom: 1rem;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+        font-family: var(--font-sans);
+    }
+    .app-header .subtitle {
+        color: var(--col-muted);
+        font-size: 0.82rem;
+        margin: 0.2rem 0 0 0;
+        font-family: var(--font-mono);
+        letter-spacing: 0.02em;
     }
 
-    .outcome-gauge {
-        border-radius: 12px;
-        padding: 1.2rem;
-        text-align: center;
+    /* ── Section title ── */
+    .section-title {
+        font-size: 1.0rem;
+        font-weight: 600;
+        color: var(--col-primary);
+        border-bottom: 1px solid var(--col-border);
+        padding-bottom: 0.3rem;
+        margin-bottom: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+
+    /* ── Probability bars ── */
+    .prob-row {
+        margin: 5px 0;
+    }
+    .prob-header {
+        display: flex;
+        justify-content: space-between;
+        font-size: 0.82rem;
+        font-family: var(--font-mono);
+        color: var(--col-text);
+        margin-bottom: 2px;
+    }
+    .prob-track {
+        background: #e0e0e0;
+        height: 14px;
+        width: 100%;
+    }
+    .prob-fill {
+        height: 100%;
+    }
+    .prob-win     { background: #2c6e49; }
+    .prob-partial { background: #7d5a00; }
+    .prob-loss    { background: #8b1a1a; }
+
+    /* ── Outcome result card ── */
+    .result-card {
+        border: 1px solid var(--col-border);
+        border-left: 4px solid var(--col-primary);
+        background: var(--col-surface);
+        padding: 1rem 1.2rem;
         margin: 0.5rem 0;
     }
-    .outcome-0 { background: linear-gradient(135deg, #fdecea, #ffe0e0); border: 2px solid #e74c3c; }
-    .outcome-1 { background: linear-gradient(135deg, #fff3e0, #ffe8c0); border: 2px solid #f39c12; }
-    .outcome-2 { background: linear-gradient(135deg, #e8f5e9, #d0f0da); border: 2px solid #27ae60; }
+    .result-card.outcome-0 { border-left-color: var(--col-danger); }
+    .result-card.outcome-1 { border-left-color: var(--col-warning); }
+    .result-card.outcome-2 { border-left-color: var(--col-success); }
 
-    .confidence-badge {
-        display: inline-block;
-        background: #e8f0fe;
-        color: #1a365d;
-        border-radius: 20px;
-        padding: 0.2rem 0.8rem;
-        font-size: 0.85rem;
+    .result-label {
+        font-size: 1.3rem;
         font-weight: 600;
+        font-family: var(--font-sans);
+        letter-spacing: 0.01em;
+    }
+    .result-label.outcome-0 { color: var(--col-danger); }
+    .result-label.outcome-1 { color: var(--col-warning); }
+    .result-label.outcome-2 { color: var(--col-success); }
+
+    .confidence-tag {
+        display: inline-block;
+        font-family: var(--font-mono);
+        font-size: 0.78rem;
+        border: 1px solid var(--col-border);
+        padding: 0.15rem 0.5rem;
+        color: var(--col-muted);
+        background: white;
+        margin-top: 0.3rem;
+    }
+
+    /* ── EV cards ── */
+    .ev-card {
+        border: 1px solid var(--col-border);
+        padding: 1rem;
+        text-align: center;
+        background: var(--col-surface);
+    }
+    .ev-card.positive { border-top: 3px solid var(--col-success); }
+    .ev-card.negative { border-top: 3px solid var(--col-danger); }
+    .ev-card.neutral  { border-top: 3px solid var(--col-warning); }
+
+    .ev-value {
+        font-family: var(--font-mono);
+        font-size: 2rem;
+        font-weight: 600;
+        line-height: 1.1;
+    }
+    .ev-label {
+        font-size: 0.78rem;
+        color: var(--col-muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        margin-top: 0.3rem;
+        font-family: var(--font-sans);
+    }
+    .ev-sublabel {
+        font-size: 0.72rem;
+        color: var(--col-muted);
+        font-family: var(--font-mono);
+        margin-top: 6px;
+    }
+
+    /* ── Training log ── */
+    .training-log {
+        background: #1a1a1a;
+        color: #d4d4d4;
+        border: 1px solid #333333;
+        padding: 0.8rem 1rem;
+        font-family: var(--font-mono);
+        font-size: 0.80rem;
+        height: 280px;
+        overflow-y: auto;
+        line-height: 1.6;
+    }
+    .log-line   { margin: 1px 0; }
+    .log-ok     { color: #6db88c; }
+    .log-warn   { color: #c8a84b; }
+    .log-error  { color: #c86060; }
+    .log-info   { color: #6a9fca; }
+
+    /* ── Note box ── */
+    .note-box {
+        border: 1px solid var(--col-border);
+        border-left: 3px solid var(--col-accent);
+        background: var(--col-surface);
+        padding: 0.7rem 1rem;
+        font-size: 0.85rem;
+        margin: 0.6rem 0;
+    }
+
+    /* ── Metrics ── */
+    div[data-testid="stMetricValue"] {
+        font-family: var(--font-mono);
+        font-size: 1.6rem;
+    }
+    div[data-testid="stMetricLabel"] {
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--col-muted);
     }
 </style>
 """, unsafe_allow_html=True)
@@ -180,8 +285,8 @@ if st.session_state.predictor is None and MODEL_CHECKPOINT.exists():
 
 st.markdown(f"""
 <div class="app-header">
-    <h1>🔮 Predictive Litigation Analytics</h1>
-    <p>Machine Learning Modell für österreichische Zivilprozesse · v{APP_VERSION}</p>
+    <h1>Predictive Litigation Analytics</h1>
+    <div class="subtitle">Machine Learning Modell für österreichische Zivilprozesse &nbsp;·&nbsp; v{APP_VERSION} &nbsp;·&nbsp; LitigationClassifier (PyTorch)</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -189,16 +294,16 @@ st.markdown(f"""
 # ─── Sidebar ─────────────────────────────────────────────────────────────────────
 
 with st.sidebar:
-    st.markdown("### 📊 Model Status")
+    st.markdown("**Modell-Status**")
 
     model_exists = MODEL_CHECKPOINT.exists()
     if model_exists:
-        st.success("✅ Trainiertes Modell vorhanden")
+        st.success("Trainiertes Modell vorhanden")
         mtime = MODEL_CHECKPOINT.stat().st_mtime
         from datetime import datetime
         st.caption(f"Zuletzt trainiert: {datetime.fromtimestamp(mtime).strftime('%d.%m.%Y %H:%M')}")
     else:
-        st.warning("⚠️ Noch kein Modell trainiert")
+        st.warning("Noch kein Modell trainiert")
 
     stats = dm.get_statistics()
     st.metric("Dataset-Größe", stats.get("total_cases", 0))
@@ -207,14 +312,14 @@ with st.sidebar:
     if stats.get("labeled_cases", 0) > 0:
         oc = stats.get("outcome_distribution", {})
         st.markdown("**Outcome-Verteilung:**")
-        st.markdown(
-            f"✅ Obsiegen: {oc.get('obsiegen', 0)} | "
-            f"⚖️ Teilw.: {oc.get('teilweise', 0)} | "
-            f"❌ Unterl.: {oc.get('unterliegen', 0)}"
+        st.caption(
+            f"Obsiegen: {oc.get('obsiegen', 0)}  |  "
+            f"Teilw.: {oc.get('teilweise', 0)}  |  "
+            f"Unterl.: {oc.get('unterliegen', 0)}"
         )
 
     st.divider()
-    st.markdown("### ⚙️ Training-Config")
+    st.markdown("**Training-Parameter**")
     epochs = st.slider("Max. Epochen", 50, 500, TRAINING_CONFIG["epochs"], 50)
     lr = st.select_slider(
         "Lernrate",
@@ -236,17 +341,17 @@ with st.sidebar:
     st.session_state.openai_api_key = api_key
 
     st.divider()
-    if st.button("🔄 App neu laden", use_container_width=True):
+    if st.button("App neu laden", use_container_width=True):
         st.rerun()
 
 
 # ─── Main Tabs ────────────────────────────────────────────────────────────────────
 
 tab_train, tab_eval, tab_predict, tab_ev = st.tabs([
-    "🏋️ Training",
-    "📈 Evaluation",
-    "🔮 Vorhersage",
-    "💰 Erwartungswert",
+    "Training",
+    "Evaluation",
+    "Vorhersage",
+    "Erwartungswert",
 ])
 
 
@@ -255,12 +360,11 @@ tab_train, tab_eval, tab_predict, tab_ev = st.tabs([
 # ════════════════════════════════════════════════════════════════════════════════
 
 with tab_train:
-    st.markdown('<div class="section-header">🏋️ Modell trainieren</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Modell trainieren</div>', unsafe_allow_html=True)
 
     cases, embeddings_dict = dm.export_for_training()
     n_cases = len(cases)
 
-    # Status
     col_s1, col_s2, col_s3, col_s4 = st.columns(4)
     col_s1.metric("Trainingsdaten", n_cases)
     col_s2.metric("Min. empfohlen", "20")
@@ -269,22 +373,22 @@ with tab_train:
 
     if n_cases < 5:
         st.error(
-            f"⚠️ Nicht genug Daten für Training! "
-            f"{n_cases}/5 beschriftete Fälle mit Embeddings. "
+            f"Nicht genug Daten für Training. "
+            f"{n_cases}/5 beschriftete Fälle mit Embeddings vorhanden. "
             "Bitte zuerst mehr Urteile mit dem Data Extractor verarbeiten."
         )
     elif n_cases < 20:
         st.warning(
-            f"⚠️ Nur {n_cases} Fälle — Modell wird trainiert, "
+            f"Nur {n_cases} Fälle — Modell wird trainiert, "
             "aber mit mehr Daten (>50) wird die Genauigkeit erheblich besser."
         )
     else:
-        st.success(f"✅ {n_cases} Fälle für das Training verfügbar.")
+        st.success(f"{n_cases} Fälle für das Training verfügbar.")
 
     st.divider()
 
     # ── Architecture Info ────────────────────────────────────────────────────────
-    with st.expander("🧠 Modell-Architektur", expanded=False):
+    with st.expander("Modell-Architektur", expanded=False):
         fe = FeatureEngineer()
         st.markdown(f"""
         **Netzwerk-Architektur:**
@@ -293,11 +397,11 @@ with tab_train:
         - **Fusion Network**: Linear(1344 → 512) → Linear(512 → 256) → Linear(256 → 128) → Linear(128 → 3)
         - **Loss**: Focal Loss (γ=2) mit Klassen-Gewichtung
         - **Optimizer**: AdamW mit ReduceLROnPlateau
-        - **Regulierung**: LayerNorm, Dropout, Gradient Clipping, Early Stopping
+        - **Regularisierung**: LayerNorm, Dropout, Gradient Clipping, Early Stopping
 
         **Input-Dimensionen:**
         - 5 Textabschnitt-Embeddings: 5 × 3072 = 15.360 dim
-        - Strukturierte Features: {fe.feature_dim} dim (Streitwert, Anspruchsart, Einwendungen, etc.)
+        - Strukturierte Features: {fe.feature_dim} dim (Streitwert, Anspruchsart, Einwendungen, ...)
 
         **Output:** 3 Klassen (Unterliegen / Teilweise / Obsiegen)
         """)
@@ -307,7 +411,7 @@ with tab_train:
 
     with col_btn1:
         train_btn = st.button(
-            f"▶ Training starten ({n_cases} Fälle)",
+            f"Training starten  ({n_cases} Fälle)",
             type="primary",
             disabled=n_cases < 3 or st.session_state.training_running,
             use_container_width=True,
@@ -315,7 +419,7 @@ with tab_train:
 
     with col_btn2:
         if MODEL_CHECKPOINT.exists():
-            if st.button("🔄 Modell neu trainieren", use_container_width=True):
+            if st.button("Modell neu trainieren", use_container_width=True):
                 MODEL_CHECKPOINT.unlink(missing_ok=True)
                 st.session_state.predictor = None
                 st.session_state.trainer = None
@@ -326,7 +430,6 @@ with tab_train:
         st.session_state.training_running = True
         st.session_state.training_log = []
 
-        # Setup trainer
         custom_config = {
             **TRAINING_CONFIG,
             "epochs": epochs,
@@ -355,13 +458,13 @@ with tab_train:
 
             elif phase == "prepared":
                 st.session_state.training_log.append(
-                    f'[✓] Train: {kwargs["train_size"]} | Val: {kwargs["val_size"]} | '
+                    f'[OK]  Train: {kwargs["train_size"]} | Val: {kwargs["val_size"]} | '
                     f'Features: {kwargs["feature_dim"]}'
                 )
 
             elif phase == "model_built":
                 st.session_state.training_log.append(
-                    f'[✓] Modell gebaut: {kwargs["parameters"]:,} Parameter | '
+                    f'[OK]  Modell gebaut: {kwargs["parameters"]:,} Parameter | '
                     f'Device: {kwargs["device"]}'
                 )
 
@@ -375,47 +478,58 @@ with tab_train:
 
                 progress_bar.progress(epoch / total)
                 status_text.markdown(
-                    f"**Epoche {epoch}/{total}** | "
-                    f"Train Loss: `{kwargs.get('train_loss', 0):.4f}` | "
-                    f"Val Acc: `{kwargs.get('val_acc', 0):.1%}` | "
-                    f"Beste Val Acc: `{kwargs.get('best_val_acc', 0):.1%}` | "
+                    f"**Epoche {epoch}/{total}** &nbsp;|&nbsp; "
+                    f"Train Loss: `{kwargs.get('train_loss', 0):.4f}` &nbsp;|&nbsp; "
+                    f"Val Acc: `{kwargs.get('val_acc', 0):.1%}` &nbsp;|&nbsp; "
+                    f"Beste Val Acc: `{kwargs.get('best_val_acc', 0):.1%}` &nbsp;|&nbsp; "
                     f"LR: `{kwargs.get('lr', 0):.2e}`"
                 )
 
-                # Update training chart
                 if len(train_losses) > 1:
-                    epochs_range = list(range(1, len(train_losses) + 1, max(1, len(train_losses) // 100)))
-                    if len(train_losses) - 1 not in epochs_range:
-                        epochs_range.append(len(train_losses))
-
-                    fig = make_subplots(rows=1, cols=2, subplot_titles=("Loss", "Accuracy"))
+                    fig = make_subplots(
+                        rows=1, cols=2,
+                        subplot_titles=("Loss", "Accuracy"),
+                    )
                     fig.add_trace(
-                        go.Scatter(y=train_losses, name="Train Loss", line=dict(color="#2d6a9f")),
+                        go.Scatter(y=train_losses, name="Train Loss",
+                                   line=dict(color="#1c3a5e", width=1.5)),
                         row=1, col=1,
                     )
                     fig.add_trace(
-                        go.Scatter(y=val_losses, name="Val Loss", line=dict(color="#e74c3c", dash="dash")),
+                        go.Scatter(y=val_losses, name="Val Loss",
+                                   line=dict(color="#8b1a1a", width=1.5, dash="dash")),
                         row=1, col=1,
                     )
                     fig.add_trace(
-                        go.Scatter(y=train_accs, name="Train Acc", line=dict(color="#27ae60")),
+                        go.Scatter(y=train_accs, name="Train Acc",
+                                   line=dict(color="#2c6e49", width=1.5)),
                         row=1, col=2,
                     )
                     fig.add_trace(
-                        go.Scatter(y=val_accs, name="Val Acc", line=dict(color="#f39c12", dash="dash")),
+                        go.Scatter(y=val_accs, name="Val Acc",
+                                   line=dict(color="#7d5a00", width=1.5, dash="dash")),
                         row=1, col=2,
                     )
-                    fig.update_layout(height=300, margin=dict(t=30, b=10), showlegend=True)
+                    fig.update_layout(
+                        height=280,
+                        margin=dict(t=30, b=10),
+                        showlegend=True,
+                        paper_bgcolor="white",
+                        plot_bgcolor="#f5f5f5",
+                        font=dict(family="IBM Plex Sans, sans-serif", size=11),
+                    )
+                    fig.update_xaxes(showgrid=True, gridcolor="#dddddd", gridwidth=1)
+                    fig.update_yaxes(showgrid=True, gridcolor="#dddddd", gridwidth=1)
                     chart_container.plotly_chart(fig, use_container_width=True)
 
             elif phase == "early_stop":
                 st.session_state.training_log.append(
-                    f'[⚠] {kwargs.get("message", "Early stopping")}'
+                    f'[WARN] {kwargs.get("message", "Early stopping")}'
                 )
 
             elif phase == "done":
                 st.session_state.training_log.append(
-                    f'[✅] FERTIG! Beste Val-Accuracy: {kwargs["best_val_acc"]:.1%} | '
+                    f'[OK]  FERTIG — Beste Val-Accuracy: {kwargs["best_val_acc"]:.1%} | '
                     f'Epochen: {kwargs["epochs_trained"]} | '
                     f'Zeit: {kwargs["training_time"]:.1f}s'
                 )
@@ -434,23 +548,26 @@ with tab_train:
             status_text.empty()
 
             st.success(
-                f"✅ Training abgeschlossen! "
+                f"Training abgeschlossen. "
                 f"Beste Validierungs-Accuracy: **{history['best_val_acc']:.1%}** "
                 f"(Epoche {history['best_epoch']})"
             )
-            st.info("💡 Wechseln Sie zum Tab 'Evaluation' für detaillierte Auswertung.")
+            st.markdown(
+                '<div class="note-box">Wechseln Sie zum Tab "Evaluation" für detaillierte Auswertung.</div>',
+                unsafe_allow_html=True,
+            )
 
         except Exception as e:
             st.session_state.training_running = False
             progress_bar.empty()
-            st.error(f"❌ Trainingsfehler: {e}")
+            st.error(f"Trainingsfehler: {e}")
 
     # ── Show Training Log ────────────────────────────────────────────────────────
     if st.session_state.training_log:
         st.markdown("**Training-Protokoll:**")
         log_html = '<div class="training-log">'
         for line in st.session_state.training_log:
-            cls = "log-success" if "✅" in line else "log-warning" if "⚠" in line else "log-info"
+            cls = "log-ok" if "[OK]" in line else "log-warn" if "[WARN]" in line else "log-info"
             log_html += f'<div class="log-line {cls}">{line}</div>'
         log_html += "</div>"
         st.markdown(log_html, unsafe_allow_html=True)
@@ -461,7 +578,7 @@ with tab_train:
             hist = json.load(f)
 
         if hist.get("train_loss"):
-            st.markdown("### 📈 Letztes Training")
+            st.markdown("**Letztes Training**")
             col_h1, col_h2, col_h3, col_h4 = st.columns(4)
             col_h1.metric("Beste Val-Accuracy", f"{hist.get('best_val_acc', 0):.1%}")
             col_h2.metric("Beste Epoche", hist.get("best_epoch", "—"))
@@ -473,12 +590,23 @@ with tab_train:
             ta = hist["train_acc"]
             va = hist["val_acc"]
 
-            fig = make_subplots(rows=1, cols=2, subplot_titles=("Verlust (Loss)", "Genauigkeit (Accuracy)"))
-            fig.add_trace(go.Scatter(y=tl, name="Train Loss", line=dict(color="#2d6a9f")), row=1, col=1)
-            fig.add_trace(go.Scatter(y=vl, name="Val Loss", line=dict(color="#e74c3c", dash="dash")), row=1, col=1)
-            fig.add_trace(go.Scatter(y=ta, name="Train Acc", line=dict(color="#27ae60")), row=1, col=2)
-            fig.add_trace(go.Scatter(y=va, name="Val Acc", line=dict(color="#f39c12", dash="dash")), row=1, col=2)
-            fig.update_layout(height=350, margin=dict(t=40, b=20))
+            fig = make_subplots(
+                rows=1, cols=2,
+                subplot_titles=("Verlust (Loss)", "Genauigkeit (Accuracy)"),
+            )
+            fig.add_trace(go.Scatter(y=tl, name="Train Loss", line=dict(color="#1c3a5e", width=1.5)), row=1, col=1)
+            fig.add_trace(go.Scatter(y=vl, name="Val Loss",   line=dict(color="#8b1a1a", width=1.5, dash="dash")), row=1, col=1)
+            fig.add_trace(go.Scatter(y=ta, name="Train Acc",  line=dict(color="#2c6e49", width=1.5)), row=1, col=2)
+            fig.add_trace(go.Scatter(y=va, name="Val Acc",    line=dict(color="#7d5a00", width=1.5, dash="dash")), row=1, col=2)
+            fig.update_layout(
+                height=320,
+                margin=dict(t=40, b=20),
+                paper_bgcolor="white",
+                plot_bgcolor="#f5f5f5",
+                font=dict(family="IBM Plex Sans, sans-serif", size=11),
+            )
+            fig.update_xaxes(showgrid=True, gridcolor="#dddddd", gridwidth=1)
+            fig.update_yaxes(showgrid=True, gridcolor="#dddddd", gridwidth=1)
             st.plotly_chart(fig, use_container_width=True)
 
 
@@ -487,7 +615,7 @@ with tab_train:
 # ════════════════════════════════════════════════════════════════════════════════
 
 with tab_eval:
-    st.markdown('<div class="section-header">📈 Modell-Evaluation</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Modell-Evaluation</div>', unsafe_allow_html=True)
 
     if st.session_state.predictor is None:
         st.info("Kein Modell vorhanden. Bitte zuerst das Modell im Tab 'Training' trainieren.")
@@ -495,7 +623,7 @@ with tab_eval:
         predictor = st.session_state.predictor
         trainer = st.session_state.trainer or predictor.trainer
 
-        if st.button("🔄 Vollständige Evaluation berechnen", type="primary"):
+        if st.button("Vollständige Evaluation berechnen", type="primary"):
             with st.spinner("Evaluiere Modell auf gesamtem Dataset..."):
                 try:
                     cases, emb_dict = dm.export_for_training()
@@ -508,7 +636,7 @@ with tab_eval:
             result = st.session_state.eval_result
 
             # ── Overall Metrics ──────────────────────────────────────────────────
-            st.markdown("### Gesamt-Metriken")
+            st.markdown("**Gesamt-Metriken**")
             col_e1, col_e2, col_e3 = st.columns(3)
             col_e1.metric("Overall Accuracy", f"{result['accuracy']:.1%}")
 
@@ -517,7 +645,7 @@ with tab_eval:
             col_e2.metric("Macro F1-Score", f"{macro_f1:.3f}")
             col_e3.metric("Ausgewertete Fälle", len(result.get("labels", [])))
 
-            st.markdown("### Per-Klasse Metriken")
+            st.markdown("**Per-Klasse Metriken**")
             class_df = pd.DataFrame([
                 {
                     "Klasse": OUTCOME_LABELS[cls],
@@ -530,7 +658,7 @@ with tab_eval:
             st.dataframe(class_df, use_container_width=True, hide_index=True)
 
             # ── Confusion Matrix ─────────────────────────────────────────────────
-            st.markdown("### Konfusionsmatrix")
+            st.markdown("**Konfusionsmatrix**")
             labels = result["labels"]
             preds = result["predictions"]
 
@@ -544,20 +672,28 @@ with tab_eval:
                 labels=dict(x="Vorhergesagt", y="Tatsächlich", color="Anzahl"),
                 x=class_names,
                 y=class_names,
-                color_continuous_scale="Blues",
+                color_continuous_scale=[
+                    [0.0, "#ffffff"],
+                    [0.5, "#7aadcc"],
+                    [1.0, "#1c3a5e"],
+                ],
                 text_auto=True,
             )
-            fig_cm.update_layout(height=400)
+            fig_cm.update_layout(
+                height=380,
+                paper_bgcolor="white",
+                font=dict(family="IBM Plex Sans, sans-serif", size=12),
+            )
             st.plotly_chart(fig_cm, use_container_width=True)
 
             # ── Probability Distribution ─────────────────────────────────────────
-            st.markdown("### Probability-Verteilung")
+            st.markdown("**Vorhersage-Konfidenz nach wahrer Klasse**")
             if result.get("probabilities"):
                 probs = np.array(result["probabilities"])
                 labels_arr = np.array(labels)
 
                 fig_probs = go.Figure()
-                colors = ["#e74c3c", "#f39c12", "#27ae60"]
+                colors = ["#8b1a1a", "#7d5a00", "#2c6e49"]
                 for cls in range(3):
                     mask = labels_arr == cls
                     if mask.sum() > 0:
@@ -565,13 +701,19 @@ with tab_eval:
                             y=probs[mask, cls],
                             name=f"{OUTCOME_LABELS[cls]} (true)",
                             marker_color=colors[cls],
+                            line_color=colors[cls],
                             boxpoints="all",
+                            jitter=0.3,
+                            pointpos=-1.8,
                         ))
                 fig_probs.update_layout(
-                    title="Vorhersage-Konfidenz nach wahrer Klasse",
                     yaxis_title="Predicted Probability",
-                    height=350,
+                    height=320,
+                    paper_bgcolor="white",
+                    plot_bgcolor="#f5f5f5",
+                    font=dict(family="IBM Plex Sans, sans-serif", size=11),
                 )
+                fig_probs.update_yaxes(showgrid=True, gridcolor="#dddddd")
                 st.plotly_chart(fig_probs, use_container_width=True)
 
 
@@ -580,12 +722,12 @@ with tab_eval:
 # ════════════════════════════════════════════════════════════════════════════════
 
 with tab_predict:
-    st.markdown('<div class="section-header">🔮 Neuen Fall vorhersagen</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Neuen Fall vorhersagen</div>', unsafe_allow_html=True)
 
     if st.session_state.predictor is None:
-        st.warning("⚠️ Kein trainiertes Modell. Bitte zuerst trainieren.")
+        st.warning("Kein trainiertes Modell. Bitte zuerst trainieren.")
     else:
-        st.markdown(
+        st.caption(
             "Geben Sie die Eckdaten eines neuen Falles ein. "
             "Das Modell berechnet die Outcome-Wahrscheinlichkeiten."
         )
@@ -599,7 +741,7 @@ with tab_predict:
 
                 with fc1:
                     p_streitwert = st.number_input(
-                        "Streitwert (€)", min_value=0.0, step=500.0, value=10000.0
+                        "Streitwert (EUR)", min_value=0.0, step=500.0, value=10000.0
                     )
                     p_instanz = st.selectbox("Instanz", ["BG", "LG", "OLG", "OGH"])
 
@@ -627,7 +769,7 @@ with tab_predict:
                             DEFENSE_LABELS.get(d, d), key=f"pred_ew_{d}"
                         )
 
-                st.markdown("**Textvorbringen** (für Embeddings)")
+                st.markdown("**Textvorbringen** (für Embedding-Vektoren)")
                 p_klaeger_text = st.text_area(
                     "Kläger-Vorbringen",
                     placeholder="Beschreiben Sie das Vorbringen des Klägers...",
@@ -644,7 +786,7 @@ with tab_predict:
                 )
 
                 predict_btn = st.form_submit_button(
-                    "🔮 Vorhersage berechnen", type="primary"
+                    "Vorhersage berechnen", type="primary"
                 )
 
         if predict_btn:
@@ -669,7 +811,6 @@ with tab_predict:
                 "rechtliche_beurteilung": p_rechtl,
             }
 
-            # Generate embeddings if API key provided
             embeddings = {}
             if st.session_state.openai_api_key and (p_klaeger_text or p_beklagter_text):
                 with st.spinner("Generiere Embeddings via OpenAI..."):
@@ -678,7 +819,7 @@ with tab_predict:
                         extractor = OpenAIExtractor(st.session_state.openai_api_key)
                         embeddings = extractor.generate_embeddings(sections)
                     except Exception as e:
-                        st.warning(f"Embedding-Fehler: {e} — Verwende Null-Vektoren.")
+                        st.warning(f"Embedding-Fehler: {e} — Null-Vektoren werden verwendet.")
 
             with st.spinner("Berechne Vorhersage..."):
                 result = st.session_state.predictor.predict(case_dict, embeddings)
@@ -690,68 +831,72 @@ with tab_predict:
                 result = st.session_state.prediction_result
                 pred_cls = result["predicted_outcome"]
 
-                st.markdown("## 📊 Ergebnis")
+                st.markdown("**Ergebnis**")
 
-                # Predicted outcome gauge
-                outcome_css = f"outcome-{pred_cls}"
                 st.markdown(
-                    f'<div class="outcome-gauge {outcome_css}">'
-                    f'<div style="font-size:2.5rem">{OUTCOME_ICONS[pred_cls]}</div>'
-                    f'<div style="font-size:1.4rem;font-weight:bold">{OUTCOME_LABELS[pred_cls]}</div>'
-                    f'<span class="confidence-badge">Konfidenz: {result["confidence"]:.0%}</span>'
+                    f'<div class="result-card outcome-{pred_cls}">'
+                    f'<div class="result-label outcome-{pred_cls}">{OUTCOME_LABELS[pred_cls]}</div>'
+                    f'<div class="confidence-tag">Konfidenz: {result["confidence"]:.1%}</div>'
                     f"</div>",
                     unsafe_allow_html=True,
                 )
 
                 st.markdown("**Wahrscheinlichkeiten:**")
 
-                # Probability bars
                 probs = [
-                    ("Obsiegen", result["p_win"], "prob-win", "#27ae60"),
-                    ("Teilweise", result["p_partial"], "prob-partial", "#f39c12"),
-                    ("Unterliegen", result["p_loss"], "prob-loss", "#e74c3c"),
+                    ("Obsiegen",   result["p_win"],     "prob-win"),
+                    ("Teilweise",  result["p_partial"],  "prob-partial"),
+                    ("Unterliegen",result["p_loss"],     "prob-loss"),
                 ]
 
-                for label, prob, css_class, color in probs:
+                for label, prob, css_class in probs:
                     pct = int(prob * 100)
                     st.markdown(
-                        f'<div style="margin: 6px 0">'
-                        f'<div style="display:flex;justify-content:space-between;font-size:0.85rem">'
-                        f"<span>{label}</span><span><b>{prob:.1%}</b></span></div>"
-                        f'<div class="prob-bar-container">'
-                        f'<div class="prob-bar {css_class}" style="width:{pct}%">'
-                        f"</div></div></div>",
+                        f'<div class="prob-row">'
+                        f'<div class="prob-header"><span>{label}</span>'
+                        f'<span>{prob:.1%}</span></div>'
+                        f'<div class="prob-track">'
+                        f'<div class="prob-fill {css_class}" style="width:{pct}%"></div>'
+                        f"</div></div>",
                         unsafe_allow_html=True,
                     )
 
-                # Plotly gauge
+                # Gauge chart — scientific style
                 fig_gauge = go.Figure(go.Indicator(
                     mode="gauge+number",
                     value=result["p_win"] * 100,
+                    number={"suffix": "%", "font": {"family": "IBM Plex Mono", "size": 28}},
                     domain={"x": [0, 1], "y": [0, 1]},
-                    title={"text": "Obsiegen-Wahrsch. (%)"},
+                    title={"text": "P(Obsiegen)", "font": {"family": "IBM Plex Sans", "size": 13}},
                     gauge={
-                        "axis": {"range": [0, 100]},
-                        "bar": {"color": "#2d6a9f"},
+                        "axis": {"range": [0, 100], "tickfont": {"family": "IBM Plex Mono", "size": 10}},
+                        "bar": {"color": "#1c3a5e", "thickness": 0.25},
+                        "bgcolor": "white",
+                        "borderwidth": 1,
+                        "bordercolor": "#cccccc",
                         "steps": [
-                            {"range": [0, 30], "color": "#fdecea"},
-                            {"range": [30, 55], "color": "#fff3e0"},
-                            {"range": [55, 100], "color": "#e8f5e9"},
+                            {"range": [0,  30], "color": "#f5e0e0"},
+                            {"range": [30, 55], "color": "#f5f0e0"},
+                            {"range": [55, 100],"color": "#e0f0e8"},
                         ],
                         "threshold": {
-                            "line": {"color": "#27ae60", "width": 3},
+                            "line": {"color": "#2c6e49", "width": 2},
                             "thickness": 0.75,
                             "value": 55,
                         },
                     },
                 ))
-                fig_gauge.update_layout(height=250, margin=dict(t=40, b=0, l=20, r=20))
+                fig_gauge.update_layout(
+                    height=230,
+                    margin=dict(t=40, b=0, l=20, r=20),
+                    paper_bgcolor="white",
+                    font=dict(family="IBM Plex Sans, sans-serif"),
+                )
                 st.plotly_chart(fig_gauge, use_container_width=True)
 
-                # Download result
                 result_json = json.dumps(result, ensure_ascii=False, indent=2)
                 st.download_button(
-                    "⬇ Ergebnis als JSON",
+                    "Ergebnis als JSON exportieren",
                     data=result_json.encode(),
                     file_name="vorhersage_ergebnis.json",
                     mime="application/json",
@@ -763,37 +908,34 @@ with tab_predict:
 # ════════════════════════════════════════════════════════════════════════════════
 
 with tab_ev:
-    st.markdown('<div class="section-header">💰 Erwartungswert-Kalkulation</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Erwartungswert-Kalkulation</div>', unsafe_allow_html=True)
 
     st.markdown("""
-    Kombiniert die **ML-Modell-Vorhersage** mit der **juristischen Erfolgseinschätzung**
-    des KI-Systems zur Berechnung des Gesamterwartungswerts:
+    Kombiniert die ML-Modell-Vorhersage mit der juristischen Erfolgseinschätzung
+    zur Berechnung des Gesamterwartungswerts:
 
     > **E[outcome] = w_ML × P_ML(Obsiegen) + w_Jur × P_Juristisch(Obsiegen)**
     """)
 
     if st.session_state.prediction_result is None:
-        st.info(
-            "Bitte zuerst eine Vorhersage im Tab 'Vorhersage' berechnen."
-        )
+        st.info("Bitte zuerst eine Vorhersage im Tab 'Vorhersage' berechnen.")
     else:
         ml_result = st.session_state.prediction_result
 
         col_ev1, col_ev2 = st.columns([2, 1])
 
         with col_ev1:
-            st.markdown("### Parameter")
+            st.markdown("**Parameter**")
 
             ev_c1, ev_c2 = st.columns(2)
 
             with ev_c1:
                 juristic_estimate = st.slider(
-                    "Juristische Erfolgseinschätzung (KI-System)",
+                    "Juristische Erfolgseinschätzung",
                     0.0, 1.0, 0.6, 0.05,
                     format="%.0f%%",
-                    help="Einschätzung des juristischen KI-Assistenten (0=keine Chance, 1=sicher)",
+                    help="Einschätzung des juristischen KI-Assistenten (0 = keine Chance, 1 = sicher)",
                 )
-                # Convert to 0-1
                 w_ml = st.slider(
                     "Gewichtung ML-Modell",
                     0.0, 1.0, 0.5, 0.1,
@@ -803,16 +945,16 @@ with tab_ev:
 
             with ev_c2:
                 streitwert = st.number_input(
-                    "Streitwert (€)", 0.0, 10_000_000.0, 10000.0, 500.0
+                    "Streitwert (EUR)", 0.0, 10_000_000.0, 10000.0, 500.0
                 )
                 cost_estimate = st.number_input(
-                    "Geschätzte Verfahrenskosten (€)",
+                    "Geschätzte Verfahrenskosten (EUR)",
                     0.0, 500_000.0, 3000.0, 500.0,
                     help="Anwalts- und Gerichtskosten (beider Parteien falls Verlust)",
                 )
 
             ev_btn = st.button(
-                "💰 Erwartungswert berechnen",
+                "Erwartungswert berechnen",
                 type="primary",
                 use_container_width=True,
             )
@@ -833,17 +975,18 @@ with tab_ev:
             ev = st.session_state.ev_result
 
             st.markdown("---")
-            st.markdown("### 📊 Erwartungswert-Ergebnis")
+            st.markdown("**Erwartungswert-Ergebnis**")
 
             # ── Probability Summary ──────────────────────────────────────────────
             col_ev_r1, col_ev_r2, col_ev_r3 = st.columns(3)
 
             with col_ev_r1:
                 p = ev["p_full_success_combined"]
+                css = "positive" if p > 0.5 else "neutral"
                 st.markdown(
-                    f'<div class="ev-card {"positive" if p > 0.5 else "neutral"}">'
-                    f'<div class="metric-large" style="color:#27ae60">{p:.0%}</div>'
-                    f'<div class="metric-label">Vollständiges Obsiegen</div>'
+                    f'<div class="ev-card {css}">'
+                    f'<div class="ev-value" style="color:#2c6e49">{p:.0%}</div>'
+                    f'<div class="ev-label">Vollständiges Obsiegen</div>'
                     f"</div>",
                     unsafe_allow_html=True,
                 )
@@ -852,18 +995,19 @@ with tab_ev:
                 p2 = ev["p_partial_success_combined"]
                 st.markdown(
                     f'<div class="ev-card neutral">'
-                    f'<div class="metric-large" style="color:#f39c12">{p2:.0%}</div>'
-                    f'<div class="metric-label">Teilweises Obsiegen</div>'
+                    f'<div class="ev-value" style="color:#7d5a00">{p2:.0%}</div>'
+                    f'<div class="ev-label">Teilweises Obsiegen</div>'
                     f"</div>",
                     unsafe_allow_html=True,
                 )
 
             with col_ev_r3:
                 p3 = ev["p_failure_combined"]
+                css3 = "negative" if p3 > 0.5 else "neutral"
                 st.markdown(
-                    f'<div class="ev-card {"negative" if p3 > 0.5 else "neutral"}">'
-                    f'<div class="metric-large" style="color:#e74c3c">{p3:.0%}</div>'
-                    f'<div class="metric-label">Unterliegen</div>'
+                    f'<div class="ev-card {css3}">'
+                    f'<div class="ev-value" style="color:#8b1a1a">{p3:.0%}</div>'
+                    f'<div class="ev-label">Unterliegen</div>'
                     f"</div>",
                     unsafe_allow_html=True,
                 )
@@ -875,13 +1019,13 @@ with tab_ev:
             col_ev_m1, col_ev_m2 = st.columns(2)
 
             with col_ev_m1:
-                color = "#27ae60" if ev_prob > 0.55 else "#f39c12" if ev_prob > 0.4 else "#e74c3c"
+                color = "#2c6e49" if ev_prob > 0.55 else "#7d5a00" if ev_prob > 0.4 else "#8b1a1a"
                 st.markdown(
                     f'<div class="ev-card">'
-                    f'<div class="metric-large" style="color:{color}">{ev_prob:.0%}</div>'
-                    f'<div class="metric-label">Kombinierte Erfolgwahrscheinlichkeit</div>'
-                    f'<div style="margin-top:8px;font-size:0.8rem;color:#666">'
-                    f'ML: {ev["ml_weight_applied"]:.0%} | '
+                    f'<div class="ev-value" style="color:{color}">{ev_prob:.0%}</div>'
+                    f'<div class="ev-label">Kombinierte Erfolgswahrscheinlichkeit</div>'
+                    f'<div class="ev-sublabel">'
+                    f'ML: {ev["ml_weight_applied"]:.0%} &nbsp;|&nbsp; '
                     f'Juristisch: {ev["juristic_weight_applied"]:.0%}</div>'
                     f"</div>",
                     unsafe_allow_html=True,
@@ -894,17 +1038,20 @@ with tab_ev:
                     ev_gross = ev["ev_gross_eur"]
                     ev_net = ev.get("ev_net_eur", ev_gross)
                     proceed = ev.get("proceed_recommendation", ev_net > 0)
-
-                    net_color = "#27ae60" if proceed else "#e74c3c"
-                    net_icon = "✅" if proceed else "❌"
+                    css_card = "positive" if proceed else "negative"
+                    net_color = "#2c6e49" if proceed else "#8b1a1a"
+                    verdict = "Klagbetreibung empfohlen" if proceed else "Klagbetreibung nicht empfohlen"
 
                     st.markdown(
-                        f'<div class="ev-card {"positive" if proceed else "negative"}">'
-                        f'<div style="font-size:0.9rem;color:#666">Erwartungswert (brutto)</div>'
-                        f'<div style="font-size:1.8rem;font-weight:bold;color:#2d6a9f">€ {ev_gross:,.0f}</div>'
-                        f'<div style="font-size:0.9rem;color:#666;margin-top:8px">Erwartungswert (netto, nach Kosten)</div>'
-                        f'<div style="font-size:2rem;font-weight:bold;color:{net_color}">€ {ev_net:,.0f}</div>'
-                        f'<div style="margin-top:10px">{net_icon} {"Klagbetreibung empfohlen" if proceed else "Klagbetreibung nicht empfohlen"}</div>'
+                        f'<div class="ev-card {css_card}">'
+                        f'<div class="ev-sublabel">Erwartungswert (brutto)</div>'
+                        f'<div style="font-family:IBM Plex Mono,monospace;font-size:1.5rem;'
+                        f'font-weight:600;color:#1c3a5e">EUR {ev_gross:,.0f}</div>'
+                        f'<div class="ev-sublabel" style="margin-top:10px">Erwartungswert (netto, nach Kosten)</div>'
+                        f'<div style="font-family:IBM Plex Mono,monospace;font-size:1.8rem;'
+                        f'font-weight:600;color:{net_color}">EUR {ev_net:,.0f}</div>'
+                        f'<div style="margin-top:10px;font-size:0.82rem;font-family:IBM Plex Sans,sans-serif;'
+                        f'color:{net_color};font-weight:600">{verdict}</div>'
                         f"</div>",
                         unsafe_allow_html=True,
                     )
@@ -917,23 +1064,27 @@ with tab_ev:
                 ev_n = ev.get("ev_net_eur", ev_g)
 
                 fig_wf = go.Figure(go.Waterfall(
-                    name="EV Berechnung",
+                    name="EV",
                     orientation="v",
                     measure=["absolute", "relative", "relative", "total"],
                     x=["Streitwert", "Erfolgsfaktor", "Verfahrenskosten", "Netto-EV"],
                     y=[sw, ev_g - sw, -costs, 0],
-                    text=[f"€{sw:,.0f}", f"€{ev_g-sw:,.0f}", f"-€{costs:,.0f}", f"€{ev_n:,.0f}"],
+                    text=[f"EUR {sw:,.0f}", f"EUR {ev_g-sw:,.0f}", f"-EUR {costs:,.0f}", f"EUR {ev_n:,.0f}"],
                     textposition="outside",
-                    connector={"line": {"color": "rgb(63, 63, 63)"}},
-                    increasing={"marker": {"color": "#27ae60"}},
-                    decreasing={"marker": {"color": "#e74c3c"}},
-                    totals={"marker": {"color": "#2d6a9f"}},
+                    connector={"line": {"color": "#aaaaaa", "width": 1}},
+                    increasing={"marker": {"color": "#2c6e49"}},
+                    decreasing={"marker": {"color": "#8b1a1a"}},
+                    totals={"marker": {"color": "#1c3a5e"}},
                 ))
                 fig_wf.update_layout(
-                    title="Erwartungswert-Berechnung",
-                    height=350,
+                    title=None,
+                    height=320,
                     showlegend=False,
+                    paper_bgcolor="white",
+                    plot_bgcolor="#f5f5f5",
+                    font=dict(family="IBM Plex Sans, sans-serif", size=11),
                 )
+                fig_wf.update_yaxes(showgrid=True, gridcolor="#dddddd")
                 st.plotly_chart(fig_wf, use_container_width=True)
 
             # ── Export ───────────────────────────────────────────────────────────
@@ -942,7 +1093,7 @@ with tab_ev:
                 "erwartungswert": ev,
             }
             st.download_button(
-                "⬇ Vollständigen Bericht als JSON",
+                "Vollständigen Bericht als JSON exportieren",
                 data=json.dumps(combined, ensure_ascii=False, indent=2).encode(),
                 file_name="erwartungswert_analyse.json",
                 mime="application/json",
@@ -952,9 +1103,10 @@ with tab_ev:
 # ─── Footer ───────────────────────────────────────────────────────────────────────
 st.markdown("---")
 st.markdown(
-    f"<div style='text-align:center;color:#6c757d;font-size:0.8rem'>"
-    f"Predictive Litigation Analytics · v{APP_VERSION} · "
-    f"Modell: LitigationClassifier (PyTorch) · "
+    f"<div style='text-align:center;color:#888888;font-size:0.75rem;"
+    f"font-family:IBM Plex Mono,monospace;letter-spacing:0.04em'>"
+    f"Predictive Litigation Analytics &nbsp;·&nbsp; v{APP_VERSION} &nbsp;·&nbsp; "
+    f"LitigationClassifier (PyTorch) &nbsp;·&nbsp; "
     f"Device: {'CUDA' if __import__('torch').cuda.is_available() else 'CPU'}"
     f"</div>",
     unsafe_allow_html=True,

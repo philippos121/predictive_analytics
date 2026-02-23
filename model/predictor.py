@@ -152,14 +152,18 @@ class LitigationPredictor:
 
         # Multiplikative Formel: juristic_estimate skaliert beide Anteile.
         # Dadurch gilt: juristic=0 (rechtlich unschlüssig) → Gesamtwahrscheinlichkeit=0,
-        # unabhängig vom statistischen Modell. Außerdem ist p_full_success ≤ juristic_estimate.
+        # unabhängig vom statistischen Modell.
         #
-        #   p_full    = juristic * (w_ml * p_win_ml  + w_jur * 1.0)
-        #   p_partial = juristic * (w_ml * p_partial + w_jur * 0.5)
+        #   p_full    = juristic * (w_ml * p_win_ml + w_jur)
+        #   p_partial = juristic *  w_ml * p_partial_ml       ← kein juristic-Anteil für Teilerfolg
+        #   p_failure = 1 - p_full - p_partial
         #
-        # Äquivalent zur alten additiven Formel bei juristic=1; konservativer dazwischen.
+        # Das implizite juristische Wahrscheinlichkeits-Tupel lautet damit:
+        #   (p_jur_loss = 1 − juristic, p_jur_partial = 0, p_jur_win = juristic)
+        # → gültige Verteilung für alle juristic ∈ [0,1].
+        # Beweis: p_full + p_partial + p_failure = 1, ev ∈ [0, juristic] ⊆ [0, 1].
         p_full_success = juristic_estimate * (w_ml_norm * p_win_ml + w_jurist_norm)
-        p_partial_success = juristic_estimate * (w_ml_norm * p_partial_ml + w_jurist_norm * 0.5)
+        p_partial_success = juristic_estimate * w_ml_norm * p_partial_ml
         p_failure = max(0.0, 1.0 - p_full_success - p_partial_success)
 
         # Weighted win probability

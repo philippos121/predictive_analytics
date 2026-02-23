@@ -2,9 +2,10 @@
 Neural Network Architecture for Predictive Litigation Analytics.
 
 Multi-input architecture combining:
-1. Text embeddings (5 sections × 3072-dim) via per-section encoders
+1. Text embeddings (3 sections × 3072-dim) via per-section encoders
+   - klaegervorbringen, beklagtenvorbringen, aufgenommene_beweise
 2. Structured legal features via a compact encoder
-3. Fusion network for final classification
+3. Flat fusion MLP (one hidden layer) for final classification
 
 Output: 3-class (Unterliegen / Teilweise / Obsiegen)
 """
@@ -78,11 +79,14 @@ class LitigationClassifier(nn.Module):
     """
     Main classification model for Austrian civil case outcome prediction.
 
-    Architecture:
-    - 5 EmbeddingEncoders (one per text section)
-    - 1 StructuredEncoder
-    - Fusion MLP
-    - 3-class output (0=loss, 1=partial, 2=win)
+    Architecture (optimiert für kleine Datensätze, 50–300 Fälle):
+    - 3 EmbeddingEncoders (je ein Encoder pro Textabschnitt):
+        klaegervorbringen, beklagtenvorbringen, aufgenommene_beweise
+    - 1 StructuredEncoder für strukturierte Fallmerkmale
+    - Flaches Fusion-MLP (ein Hidden Layer)
+    - 3-class output (0=Unterliegen, 1=Teilweise, 2=Obsiegen)
+
+    Gesamtparameter: ~2,56 Mio. (bei Standardkonfiguration)
     """
 
     def __init__(self, structured_dim: int, config: dict = NN_CONFIG):
@@ -113,13 +117,7 @@ class LitigationClassifier(nn.Module):
             hidden_dim=struct_hidden_dim,
         )
 
-        # Attention over sections (learn which sections matter most)
-        self.section_attention = nn.Sequential(
-            nn.Linear(emb_output_dim, 1),
-            nn.Softmax(dim=0),
-        )
-
-        # Fusion network
+        # Fusion network: concatenation of all section encodings + structured features
         fusion_input_dim = n_sections * emb_output_dim + struct_hidden_dim
         layers = []
         prev_dim = fusion_input_dim

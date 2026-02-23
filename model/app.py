@@ -391,20 +391,21 @@ with tab_train:
     with st.expander("Modell-Architektur", expanded=False):
         fe = FeatureEngineer()
         st.markdown(f"""
-        **Netzwerk-Architektur:**
-        - **Embedding Encoder** (3×): Linear(3072 → 512) + LayerNorm + GELU + Dropout → Linear(512 → 256)
+        **Netzwerk-Architektur** (optimiert für 50–300 Fälle):
+        - **Embedding Encoder** (3×): Linear(3072 → 256) + LayerNorm + GELU + Dropout → Linear(256 → 128)
         - **Structured Encoder**: Linear({fe.feature_dim} → 64) + LayerNorm + GELU
-        - **Fusion Network**: Linear(832 → 512) → Linear(512 → 256) → Linear(256 → 128) → Linear(128 → 3)
+        - **Fusion Network**: Linear(448 → 128) + LayerNorm + GELU + Dropout → Linear(128 → 3)
         - **Loss**: Focal Loss (γ=2) mit Klassen-Gewichtung
         - **Optimizer**: AdamW mit ReduceLROnPlateau
         - **Regularisierung**: LayerNorm, Dropout, Gradient Clipping, Early Stopping
+        - **Parameter gesamt**: ~2,56 Mio. (reduziert von ~5,7 Mio. für bessere Generalisierung)
 
         **Input-Embeddings (3 Abschnitte):**
         - **Kläger-Vorbringen**: Was begehrt der Kläger?
         - **Beklagten-Vorbringen**: Welche Einwendungen macht der Beklagte?
         - **Aufgenommene Beweise**: Faktische Beschreibung der aufgenommenen Beweise
           (Art, Anzahl, welche Partei — ohne Bewertung; aus Beweiswürdigung + Feststellungen generiert)
-        - 3 × 3072 = 9.216 dim Embedding-Input
+        - 3 × 128 = 384 dim nach Encodierung + 64 dim strukturiert = **448 dim Fusion-Input**
 
         **Nicht im Input** (sind Ergebnis der richterlichen Entscheidungsfindung):
         Feststellungen, Beweiswürdigung, Rechtliche Beurteilung

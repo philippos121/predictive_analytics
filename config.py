@@ -127,11 +127,24 @@ EMBEDDING_SECTION_LABELS = {
 }
 
 # ─── Neural Network Configuration ───────────────────────────────────────────────
+# Dimensionen sind auf kleine Datensätze (50–300 Fälle) ausgelegt.
+# Die Embeddings (text-embedding-3-large) sind bereits hochwertige Repräsentationen,
+# sodass einfache Projektionen ausreichen. Ein zu tiefes Netz würde bei wenigen
+# Fällen overfittten.
+#
+# Parameteranzahl ca.:
+#   3 × EmbeddingEncoder (3072→256→128):  ~2,5 Mio.
+#   StructuredEncoder (37→64→64):         ~6,5 K
+#   Fusion (448→128→3):                   ~58 K
+#   Gesamt: ~2,56 Mio.  (früher: ~5,7 Mio.)
+#
+# Für >500 Fälle können embedding_hidden_dim=512, embedding_output_dim=256
+# und fusion_dims=[256, 128] gesetzt werden.
 NN_CONFIG = {
-    "embedding_hidden_dim": 512,     # Intermediate dim per embedding encoder
-    "embedding_output_dim": 256,     # Output dim per embedding encoder
+    "embedding_hidden_dim": 256,     # Intermediate dim per embedding encoder
+    "embedding_output_dim": 128,     # Output dim per embedding encoder
     "structured_hidden_dim": 64,     # Structured feature encoder hidden dim
-    "fusion_dims": [512, 256, 128],  # Fusion layer dimensions
+    "fusion_dims": [128],            # Single hidden fusion layer (448 → 128 → 3)
     "dropout_embedding": 0.3,
     "dropout_fusion": 0.3,
     "num_classes": 3,                # win / partial / loss

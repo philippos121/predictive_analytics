@@ -31,13 +31,25 @@ class LitigationPredictor:
     """
     Applies the trained model to new cases and computes expected value.
 
-    Expected Value Formula:
-        E[outcome] = w_ml * P_ml(win) + w_jurist * P_jurist(win)
+    Expected Value Formula (gewichtetes Mixture zweier Verteilungen):
+
+        Jurist-Verteilung : P_jur  = (win=juristic, partial=0, loss=1−juristic)
+        ML-Verteilung     : P_ml   = (win=p_win_ml, partial=p_partial_ml, loss=p_loss_ml)
+                            konditioniert auf rechtliche Zulässigkeit (juristic);
+                            unbedingtes ML = juristic × P_ml_conditional
+
+        Mixture:
+            p_full    = w_ml × juristic × p_win_ml  +  w_jur × juristic
+            p_partial = w_ml × juristic × p_partial_ml
+            p_failure = 1 − p_full − p_partial
+
+        Garantie: juristic = 0  →  p_full = p_partial = 0
+            (rechtlich völlig unschlüssige Fälle schlagen auf Gesamtergebnis durch)
 
     where:
-        P_ml(win) = model's predicted probability of outcome=2 (Obsiegen)
-        P_jurist(win) = juristic success estimate (0.0–1.0)
-        w_ml, w_jurist = configurable weights (default 0.5 each)
+        juristic      = juristic success estimate (0.0–1.0), auch P(rechtlich zulässig)
+        p_win_ml      = model's predicted probability of outcome=2 (Obsiegen)
+        w_ml, w_jur   = configurable weights (default 0.5 each), sum to 1
     """
 
     def __init__(self, trainer: LitigationTrainer):
@@ -150,20 +162,35 @@ class LitigationPredictor:
         p_win_ml = ml_result["p_win"]
         p_partial_ml = ml_result["p_partial"]
 
-        # Multiplikative Formel: juristic_estimate skaliert beide Anteile.
-        # Dadurch gilt: juristic=0 (rechtlich unschlüssig) → Gesamtwahrscheinlichkeit=0,
-        # unabhängig vom statistischen Modell.
+        # Gewichtetes Mixture zweier Wahrscheinlichkeitsverteilungen:
         #
-        #   p_full    = juristic * (w_ml * p_win_ml + w_jur)
-        #   p_partial = juristic *  w_ml * p_partial_ml       ← kein juristic-Anteil für Teilerfolg
-        #   p_failure = 1 - p_full - p_partial
+        #   Jurist-Verteilung : (p_win=juristic, p_partial=0, p_loss=1−juristic)
+        #   ML-Verteilung     : ML-Modell wurde auf zugelassenen Fällen trainiert;
+        #                       juristic_estimate skaliert als P(rechtlich zulässig)
+        #                       die ML-Wahrscheinlichkeiten auf den unbedingten Raum.
         #
-        # Das implizite juristische Wahrscheinlichkeits-Tupel lautet damit:
-        #   (p_jur_loss = 1 − juristic, p_jur_partial = 0, p_jur_win = juristic)
-        # → gültige Verteilung für alle juristic ∈ [0,1].
-        # Beweis: p_full + p_partial + p_failure = 1, ev ∈ [0, juristic] ⊆ [0, 1].
-        p_full_success = juristic_estimate * (w_ml_norm * p_win_ml + w_jurist_norm)
-        p_partial_success = juristic_estimate * w_ml_norm * p_partial_ml
+        #   p_ml_win_adj     = juristic * p_win_ml      (bedingtes ML → unbedingt)
+        #   p_ml_partial_adj = juristic * p_partial_ml
+        #
+        #   Mixture (konvexe Kombination):
+        #     p_full    = w_ml * p_ml_win_adj     + w_jur * juristic
+        #               = juristic * (w_ml * p_win_ml + w_jur)
+        #     p_partial = w_ml * p_ml_partial_adj + w_jur * 0
+        #     p_failure = 1 − p_full − p_partial
+        #
+        # Garantie: juristic=0 (rechtlich unschlüssig) → p_full=0, p_partial=0
+        #   unabhängig vom ML-Modell, weil beide Terme mit juristic skaliert sind.
+        # Beweis: p_full + p_partial ≤ juristic ≤ 1, daher p_failure ≥ 0.
+
+        # Mixture: ML-Anteil mit Zulässigkeits-Skalierung
+        p_ml_win_adj     = juristic_estimate * p_win_ml
+        p_ml_partial_adj = juristic_estimate * p_partial_ml
+
+        # Jurist-Anteil (Vollerfolg-Beitrag; kein Teilerfolg-Beitrag)
+        p_jur_win = juristic_estimate
+
+        p_full_success    = w_ml_norm * p_ml_win_adj     + w_jurist_norm * p_jur_win
+        p_partial_success = w_ml_norm * p_ml_partial_adj
         p_failure = max(0.0, 1.0 - p_full_success - p_partial_success)
 
         # Weighted win probability

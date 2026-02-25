@@ -13,6 +13,8 @@ from typing import Optional
 import numpy as np
 import torch
 
+from model.ratg_calculator import RATGKostenrechnung
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
     DEFENSE_LABELS,
@@ -138,6 +140,7 @@ class LitigationPredictor:
         w_jurist: float = 0.5,
         streitwert_eur: Optional[float] = None,
         cost_estimate_eur: Optional[float] = None,
+        ratg_kosten: Optional[RATGKostenrechnung] = None,
     ) -> dict:
         """
         Compute the combined expected value of a case.
@@ -148,7 +151,8 @@ class LitigationPredictor:
             w_ml: Weight for ML model prediction
             w_jurist: Weight for juristic estimate
             streitwert_eur: Case value in EUR (for monetary EV)
-            cost_estimate_eur: Estimated litigation costs in EUR
+            cost_estimate_eur: Fallback manual cost estimate in EUR
+            ratg_kosten: RATG/GGG cost calculation (preferred over cost_estimate_eur)
 
         Returns:
             Expected value analysis dict
@@ -209,19 +213,58 @@ class LitigationPredictor:
 
         # Monetary expected value
         if streitwert_eur is not None and streitwert_eur > 0:
-            ev_gross = (
-                p_full_success * streitwert_eur
-                + p_partial_success * streitwert_eur * 0.5
-                - p_failure * 0.0
-            )
-            result["streitwert_eur"] = streitwert_eur
-            result["ev_gross_eur"] = ev_gross
+            sw = streitwert_eur
 
-            if cost_estimate_eur is not None:
-                ev_net = ev_gross - cost_estimate_eur
-                result["cost_estimate_eur"] = cost_estimate_eur
-                result["ev_net_eur"] = ev_net
+            # Brutto-EV (rein statistisch, ohne Kosten) – Referenzwert
+            ev_gross = (
+                p_full_success    * sw
+                + p_partial_success * sw * 0.5
+            )
+            result["streitwert_eur"] = sw
+            result["ev_gross_eur"]   = ev_gross
+
+            if ratg_kosten is not None:
+                # ── Asymmetrisches Kostenmodell nach ZPO (§§ 41, 43) ────────
+                #
+                #   Obsiegen    (+sw):  Kosten vom Gegner ersetzt (§ 41 ZPO)
+                #                       → Netto-Kostenbelastung = 0
+                #
+                #   Teilerfolg  (+sw/2): Jede Partei trägt eigene Anwaltskosten
+                #                        + anteilige GGG (§ 43 ZPO)
+                #
+                #   Unterliegen (  0):  Kläger trägt eigene Kosten + GGG
+                #                       + gegnerische RATG-Kosten (§ 41 ZPO)
+                #
+                k_ob  = ratg_kosten.kosten_bei_obsiegen        # = 0
+                k_tob = ratg_kosten.kosten_bei_teilobsiegen
+                k_ul  = ratg_kosten.kosten_bei_unterliegen
+
+                ev_net = (
+                    p_full_success    * (sw       - k_ob)
+                    + p_partial_success * (sw * 0.5 - k_tob)
+                    + p_failure         * (         - k_ul)
+                )
+                result["ratg_kosten"]            = {
+                    "instanz":              ratg_kosten.instanz,
+                    "komplexitaet":         ratg_kosten.komplexitaet,
+                    "ggg":                  ratg_kosten.ggg_pauschalgebuehr,
+                    "eigene_anwaltskosten": ratg_kosten.eigene_anwaltskosten,
+                    "gegner_anwaltskosten": ratg_kosten.gegner_anwaltskosten,
+                    "kosten_obsiegen":      k_ob,
+                    "kosten_teilobsiegen":  k_tob,
+                    "kosten_unterliegen":   k_ul,
+                }
+                result["ev_net_eur"]             = ev_net
                 result["proceed_recommendation"] = ev_net > 0
+                result["cost_model"]             = "RATG"
+
+            elif cost_estimate_eur is not None:
+                # Fallback: manuell eingegebene Pauschalkostenschätzung
+                ev_net = ev_gross - cost_estimate_eur
+                result["cost_estimate_eur"]      = cost_estimate_eur
+                result["ev_net_eur"]             = ev_net
+                result["proceed_recommendation"] = ev_net > 0
+                result["cost_model"]             = "manuell"
 
         return result
 

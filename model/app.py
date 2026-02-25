@@ -43,6 +43,7 @@ from config import (
 from data_extractor.data_manager import DataManager
 from model.feature_engineer import FeatureEngineer
 from model.predictor import LitigationPredictor
+from model.ratg_calculator import RATGKostenrechnung, berechne_ratg_kosten
 from model.trainer import LitigationTrainer
 
 # ─── Page Config ─────────────────────────────────────────────────────────────────
@@ -1008,11 +1009,75 @@ with tab_ev:
                 streitwert = st.number_input(
                     "Streitwert (EUR)", 0.0, 10_000_000.0, 10000.0, 500.0
                 )
-                cost_estimate = st.number_input(
-                    "Geschätzte Verfahrenskosten (EUR)",
-                    0.0, 500_000.0, 3000.0, 500.0,
-                    help="Anwalts- und Gerichtskosten (beider Parteien falls Verlust)",
+                instanz_ev = st.selectbox(
+                    "Instanz",
+                    ["BG", "LG", "OLG", "OGH"],
+                    index=1,
+                    help="Zuständiges Gericht (beeinflusst RATG-Tarifposten und Einheitssatz)",
                 )
+                komplexitaet_ev = st.selectbox(
+                    "Verfahrenskomplexität",
+                    ["einfach", "mittel", "komplex"],
+                    index=1,
+                    help="Einfach: 1–2 Verhandlungstage · Mittel: 2–3 · Komplex: 4–5+",
+                )
+
+            # ── RATG-Vorschau ────────────────────────────────────────────────
+            if streitwert > 0:
+                _prev = berechne_ratg_kosten(streitwert, instanz_ev, komplexitaet_ev)
+                with st.expander("RATG/GGG-Kostenrechnung (Vorschau)", expanded=False):
+                    st.caption(
+                        "Beträge nach RATG (BGBl. I Nr. 195/2013 i.d.F.) und GGG. "
+                        "Angaben ohne Gewähr — bitte gegen aktuelles Amtsblatt prüfen."
+                    )
+                    _c1, _c2, _c3 = st.columns(3)
+                    with _c1:
+                        st.metric("GGG-Pauschalgebühr", f"EUR {_prev.ggg_pauschalgebuehr:,.0f}")
+                        st.metric("Eigene Anwaltskosten (RATG)", f"EUR {_prev.eigene_anwaltskosten:,.0f}")
+                    with _c2:
+                        st.metric(
+                            "Kosten bei Obsiegen (§ 41 ZPO)",
+                            f"EUR {_prev.kosten_bei_obsiegen:,.0f}",
+                            help="Gegner ersetzt alle Kosten vollständig.",
+                        )
+                        st.metric(
+                            "Kosten bei Teilerfolg (§ 43 ZPO)",
+                            f"EUR {_prev.kosten_bei_teilobsiegen:,.0f}",
+                            help="Eigene Anwaltskosten + 50 % GGG; jede Partei trägt ihre Kosten.",
+                        )
+                    with _c3:
+                        st.metric(
+                            "Kosten bei Unterliegen (§ 41 ZPO)",
+                            f"EUR {_prev.kosten_bei_unterliegen:,.0f}",
+                            help="Eigene Anwaltskosten + GGG + gegnerische RATG-Kosten.",
+                            delta=f"-EUR {_prev.kosten_bei_unterliegen:,.0f}",
+                            delta_color="inverse",
+                        )
+
+                    # TP-Aufschlüsselung
+                    st.markdown("**Tarifposten-Aufschlüsselung (eigene Seite)**")
+                    _rows = []
+                    for _tp, _d in _prev.tp_positionen.items():
+                        _rows.append({
+                            "Tarifpost": _tp,
+                            "Anzahl": _d["anzahl"],
+                            "Einzelbetrag (EUR)": f"{_d['einzel_eur']:,.2f}",
+                            "Gesamt (EUR)": f"{_d['gesamt_eur']:,.2f}",
+                        })
+                    _rows.append({
+                        "Tarifpost": "Einheitssatz ("
+                            + f"{int(_prev.einheitssatz_betrag / _prev.tp_summe_basis * 100)} %)",
+                        "Anzahl": "—",
+                        "Einzelbetrag (EUR)": "—",
+                        "Gesamt (EUR)": f"{_prev.einheitssatz_betrag:,.2f}",
+                    })
+                    _rows.append({
+                        "Tarifpost": "**Summe Anwaltskosten**",
+                        "Anzahl": "—",
+                        "Einzelbetrag (EUR)": "—",
+                        "Gesamt (EUR)": f"**{_prev.eigene_anwaltskosten:,.2f}**",
+                    })
+                    st.table(_rows)
 
             ev_btn = st.button(
                 "Erwartungswert berechnen",
@@ -1022,13 +1087,18 @@ with tab_ev:
 
         if ev_btn:
             predictor = st.session_state.predictor
+            ratg_kosten = (
+                berechne_ratg_kosten(streitwert, instanz_ev, komplexitaet_ev)
+                if streitwert > 0
+                else None
+            )
             ev_result = predictor.compute_expected_value(
                 ml_result=ml_result,
                 juristic_estimate=juristic_estimate,
                 w_ml=w_ml,
                 w_jurist=w_jurist,
                 streitwert_eur=streitwert if streitwert > 0 else None,
-                cost_estimate_eur=cost_estimate if cost_estimate > 0 else None,
+                ratg_kosten=ratg_kosten,
             )
             st.session_state.ev_result = ev_result
 
@@ -1097,18 +1167,21 @@ with tab_ev:
             with col_ev_m2:
                 if "ev_gross_eur" in ev:
                     ev_gross = ev["ev_gross_eur"]
-                    ev_net = ev.get("ev_net_eur", ev_gross)
-                    proceed = ev.get("proceed_recommendation", ev_net > 0)
-                    css_card = "positive" if proceed else "negative"
+                    ev_net   = ev.get("ev_net_eur", ev_gross)
+                    proceed  = ev.get("proceed_recommendation", ev_net > 0)
+                    css_card  = "positive" if proceed else "negative"
                     net_color = "#2c6e49" if proceed else "#8b1a1a"
-                    verdict = "Klagbetreibung empfohlen" if proceed else "Klagbetreibung nicht empfohlen"
+                    verdict   = "Klagbetreibung empfohlen" if proceed else "Klagbetreibung nicht empfohlen"
+                    cost_model = ev.get("cost_model", "")
+                    cost_badge = " · RATG" if cost_model == "RATG" else (" · manuell" if cost_model else "")
 
                     st.markdown(
                         f'<div class="ev-card {css_card}">'
-                        f'<div class="ev-sublabel">Erwartungswert (brutto)</div>'
+                        f'<div class="ev-sublabel">Erwartungswert (brutto, ohne Kosten)</div>'
                         f'<div style="font-family:IBM Plex Mono,monospace;font-size:1.5rem;'
                         f'font-weight:600;color:#1c3a5e">EUR {ev_gross:,.0f}</div>'
-                        f'<div class="ev-sublabel" style="margin-top:10px">Erwartungswert (netto, nach Kosten)</div>'
+                        f'<div class="ev-sublabel" style="margin-top:10px">'
+                        f'Erwartungswert (netto, asymm. ZPO-Kosten{cost_badge})</div>'
                         f'<div style="font-family:IBM Plex Mono,monospace;font-size:1.8rem;'
                         f'font-weight:600;color:{net_color}">EUR {ev_net:,.0f}</div>'
                         f'<div style="margin-top:10px;font-size:0.82rem;font-family:IBM Plex Sans,sans-serif;'
@@ -1117,29 +1190,130 @@ with tab_ev:
                         unsafe_allow_html=True,
                     )
 
+            # ── RATG-Kostenszenarien ─────────────────────────────────────────
+            if "ratg_kosten" in ev:
+                rk = ev["ratg_kosten"]
+                sw_val = ev["streitwert_eur"]
+                p_ob  = ev["p_full_success_combined"]
+                p_tob = ev["p_partial_success_combined"]
+                p_ul  = ev["p_failure_combined"]
+
+                with st.expander("Kostenszenarien nach RATG/ZPO", expanded=True):
+                    _sc1, _sc2, _sc3 = st.columns(3)
+                    with _sc1:
+                        netto_ob = sw_val - rk["kosten_obsiegen"]
+                        st.markdown(
+                            f'<div class="ev-card positive" style="text-align:center">'
+                            f'<div style="font-weight:600;color:#2c6e49">Obsiegen ({p_ob:.0%})</div>'
+                            f'<div style="font-size:0.8rem;color:#555;margin:4px 0">§ 41 ZPO – Gegner ersetzt alle Kosten</div>'
+                            f'<div style="font-family:monospace;font-size:1.1rem;color:#2c6e49">+EUR {netto_ob:,.0f}</div>'
+                            f'<div style="font-size:0.75rem;color:#888">Kosten: EUR {rk["kosten_obsiegen"]:,.0f}</div>'
+                            f"</div>",
+                            unsafe_allow_html=True,
+                        )
+                    with _sc2:
+                        netto_tob = sw_val * 0.5 - rk["kosten_teilobsiegen"]
+                        col = "#2c6e49" if netto_tob >= 0 else "#8b1a1a"
+                        sign = "+" if netto_tob >= 0 else ""
+                        st.markdown(
+                            f'<div class="ev-card neutral" style="text-align:center">'
+                            f'<div style="font-weight:600;color:#7d5a00">Teilerfolg ({p_tob:.0%})</div>'
+                            f'<div style="font-size:0.8rem;color:#555;margin:4px 0">§ 43 ZPO – eigene Anwaltskosten + ½ GGG</div>'
+                            f'<div style="font-family:monospace;font-size:1.1rem;color:{col}">'
+                            f'{sign}EUR {netto_tob:,.0f}</div>'
+                            f'<div style="font-size:0.75rem;color:#888">Kosten: EUR {rk["kosten_teilobsiegen"]:,.0f}</div>'
+                            f"</div>",
+                            unsafe_allow_html=True,
+                        )
+                    with _sc3:
+                        netto_ul = -rk["kosten_unterliegen"]
+                        st.markdown(
+                            f'<div class="ev-card negative" style="text-align:center">'
+                            f'<div style="font-weight:600;color:#8b1a1a">Unterliegen ({p_ul:.0%})</div>'
+                            f'<div style="font-size:0.8rem;color:#555;margin:4px 0">§ 41 ZPO – eigene + GGG + Gegner-RATG</div>'
+                            f'<div style="font-family:monospace;font-size:1.1rem;color:#8b1a1a">'
+                            f'EUR {netto_ul:,.0f}</div>'
+                            f'<div style="font-size:0.75rem;color:#888">'
+                            f'davon Gegnerkosten: EUR {rk["gegner_anwaltskosten"]:,.0f}</div>'
+                            f"</div>",
+                            unsafe_allow_html=True,
+                        )
+
             # ── Waterfall Chart ──────────────────────────────────────────────────
             if "ev_gross_eur" in ev:
-                sw = ev["streitwert_eur"]
-                costs = ev.get("cost_estimate_eur", 0)
-                ev_g = ev["ev_gross_eur"]
-                ev_n = ev.get("ev_net_eur", ev_g)
+                sw_val = ev["streitwert_eur"]
+                ev_g   = ev["ev_gross_eur"]
+                ev_n   = ev.get("ev_net_eur", ev_g)
 
-                fig_wf = go.Figure(go.Waterfall(
-                    name="EV",
-                    orientation="v",
-                    measure=["absolute", "relative", "relative", "total"],
-                    x=["Streitwert", "Erfolgsfaktor", "Verfahrenskosten", "Netto-EV"],
-                    y=[sw, ev_g - sw, -costs, 0],
-                    text=[f"EUR {sw:,.0f}", f"EUR {ev_g-sw:,.0f}", f"-EUR {costs:,.0f}", f"EUR {ev_n:,.0f}"],
-                    textposition="outside",
-                    connector={"line": {"color": "#aaaaaa", "width": 1}},
-                    increasing={"marker": {"color": "#2c6e49"}},
-                    decreasing={"marker": {"color": "#8b1a1a"}},
-                    totals={"marker": {"color": "#1c3a5e"}},
-                ))
+                if "ratg_kosten" in ev:
+                    rk     = ev["ratg_kosten"]
+                    p_ob   = ev["p_full_success_combined"]
+                    p_tob  = ev["p_partial_success_combined"]
+                    p_ul   = ev["p_failure_combined"]
+                    # Erwartete Kostenbelastung (probabilistisch)
+                    ek_ob  = p_ob  * rk["kosten_obsiegen"]        # = 0
+                    ek_tob = p_tob * rk["kosten_teilobsiegen"]
+                    ek_ul  = p_ul  * rk["kosten_unterliegen"]
+                    ek_ges = ek_ob + ek_tob + ek_ul
+
+                    fig_wf = go.Figure(go.Waterfall(
+                        name="EV",
+                        orientation="v",
+                        measure=["absolute", "relative", "relative", "relative", "relative", "total"],
+                        x=[
+                            "Streitwert",
+                            "Erfolgsfaktor",
+                            "E[Gegnerkosten bei Unterliegen]",
+                            "E[Eigene Kosten bei Teilerfolg]",
+                            "E[GGG-Anteil]",
+                            "Netto-EV",
+                        ],
+                        y=[
+                            sw_val,
+                            ev_g - sw_val,
+                            -(p_ul * rk["gegner_anwaltskosten"]),
+                            -(ek_tob),
+                            -(p_ul * rk["ggg"] + p_tob * rk["ggg"] * 0.5),
+                            0,
+                        ],
+                        text=[
+                            f"EUR {sw_val:,.0f}",
+                            f"EUR {ev_g - sw_val:,.0f}",
+                            f"-EUR {p_ul * rk['gegner_anwaltskosten']:,.0f}",
+                            f"-EUR {ek_tob:,.0f}",
+                            f"-EUR {p_ul * rk['ggg'] + p_tob * rk['ggg'] * 0.5:,.0f}",
+                            f"EUR {ev_n:,.0f}",
+                        ],
+                        textposition="outside",
+                        connector={"line": {"color": "#aaaaaa", "width": 1}},
+                        increasing={"marker": {"color": "#2c6e49"}},
+                        decreasing={"marker": {"color": "#8b1a1a"}},
+                        totals={"marker": {"color": "#1c3a5e"}},
+                    ))
+                else:
+                    costs = ev.get("cost_estimate_eur", 0)
+                    fig_wf = go.Figure(go.Waterfall(
+                        name="EV",
+                        orientation="v",
+                        measure=["absolute", "relative", "relative", "total"],
+                        x=["Streitwert", "Erfolgsfaktor", "Verfahrenskosten", "Netto-EV"],
+                        y=[sw_val, ev_g - sw_val, -costs, 0],
+                        text=[
+                            f"EUR {sw_val:,.0f}",
+                            f"EUR {ev_g - sw_val:,.0f}",
+                            f"-EUR {costs:,.0f}",
+                            f"EUR {ev_n:,.0f}",
+                        ],
+                        textposition="outside",
+                        connector={"line": {"color": "#aaaaaa", "width": 1}},
+                        increasing={"marker": {"color": "#2c6e49"}},
+                        decreasing={"marker": {"color": "#8b1a1a"}},
+                        totals={"marker": {"color": "#1c3a5e"}},
+                    ))
+
                 fig_wf.update_layout(
                     title=None,
-                    height=320,
+                    height=340,
                     showlegend=False,
                     paper_bgcolor="white",
                     plot_bgcolor="#f5f5f5",

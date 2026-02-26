@@ -1,6 +1,7 @@
 """
 OpenAI Extractor: Uses GPT-4o-mini and text-embedding-3-large to extract
-structured legal data and embeddings from Austrian civil judgment text.
+structured legal data and embeddings from German civil judgment text.
+Adapted for German law (BGB/ZPO) — Amtsgerichte and Landgerichte.
 """
 
 import json
@@ -31,28 +32,30 @@ from config import (
 
 # ─── Extraction Prompt ──────────────────────────────────────────────────────────
 
-EXTRACTION_SYSTEM_PROMPT = """Du bist ein Experte für österreichisches Zivilrecht.
-Deine Aufgabe ist es, aus Texten österreichischer Zivilurteile präzise strukturierte
-Daten zu extrahieren. Antworte ausschließlich mit validem JSON ohne jeglichen anderen Text.
+EXTRACTION_SYSTEM_PROMPT = """Du bist ein Experte für deutsches Zivilrecht (BGB, ZPO).
+Deine Aufgabe ist es, aus Texten deutscher Zivilurteile der Amts- und Landgerichte
+präzise strukturierte Daten zu extrahieren. Antworte ausschließlich mit validem JSON
+ohne jeglichen anderen Text.
 
 Wichtige Regeln:
 - Extrahiere KEINE Namen von Richtern, Parteien oder Anwälten
 - Fokussiere auf anspruchsrelevante, materiell-rechtliche Inhalte
 - Bei fehlenden Informationen: null für Felder, [] für Listen, false für Boolean
 - Outcome: Beziehe dich auf den Ausgang aus Sicht des KLÄGERS
+- Rechtsgrundlagen: Verweise auf BGB, ZPO, HGB, etc. (deutsches Recht)
 """
 
-EXTRACTION_USER_PROMPT = """Analysiere dieses österreichische Zivilurteil und extrahiere die folgenden Informationen als JSON:
+EXTRACTION_USER_PROMPT = """Analysiere dieses deutsche Zivilurteil und extrahiere die folgenden Informationen als JSON:
 
 {{
   "datum": "YYYY-MM-DD oder null",
-  "gericht": "z.B. BG Wien, LG Salzburg oder null (keine richternamen)",
-  "instanz": "BG" oder "LG" oder "OLG" oder "OGH" oder null,
+  "gericht": "z.B. AG München, LG Berlin oder null (keine Richtername)",
+  "instanz": "AG" oder "LG" oder "OLG" oder "BGH" oder null,
   "streitwert_eur": Zahl als float oder null,
   "streitwert_unbekannt": boolean,
 
   "anspruchsart": "Eine der folgenden: {claim_types_str} oder 'Andere'",
-  "anspruchsgruende": ["Liste der Rechtsgrundlagen, z.B. § 1295 ABGB, § 922 ABGB"],
+  "anspruchsgruende": ["Liste der Rechtsgrundlagen, z.B. § 280 BGB, § 823 BGB, § 535 BGB"],
 
   "klaeger_anspruch_zusammenfassung": "Kurze sachliche Zusammenfassung was der Kläger begehrt (max 200 Wörter, KEINE Namen)",
   "beklagter_vorbringen_zusammenfassung": "Kurze sachliche Zusammenfassung der Einwendungen (max 200 Wörter, KEINE Namen)",
@@ -102,14 +105,14 @@ URTEILSTEXT:
 
 # ─── Text Section Extraction Prompt ─────────────────────────────────────────────
 
-SECTION_EXTRACTION_PROMPT = """Extrahiere aus diesem österreichischen Zivilurteil die folgenden Textabschnitte.
+SECTION_EXTRACTION_PROMPT = """Extrahiere aus diesem deutschen Zivilurteil die folgenden Textabschnitte.
 Gib das Ergebnis als JSON zurück. Wenn ein Abschnitt nicht vorhanden ist, gib einen leeren String zurück.
 Entferne alle Namen von Personen (Richter, Parteien, Anwälte) - ersetze sie mit [KLÄGER], [BEKLAGTER], [RICHTER], [ANWALT].
 
 {{
   "klaegervorbringen": "Vollständiger Text des Kläger-Vorbringens (anonymisiert)",
   "beklagtenvorbringen": "Vollständiger Text des Beklagten-Vorbringens (anonymisiert)",
-  "feststellungen": "Vollständiger Text der Sachverhaltsfeststellungen (anonymisiert)",
+  "feststellungen": "Vollständiger Text der Sachverhaltsfeststellungen / des Tatbestands (anonymisiert)",
   "beweisw_rdigung": "Vollständiger Text der Beweiswürdigung (anonymisiert)"
 }}
 
@@ -123,8 +126,8 @@ URTEILSTEXT:
 # Zweck: Dieses Embedding kodiert welche Beweismittel das Gericht tatsächlich
 # aufgenommen hat, als neutralen Input für die Outcome-Prognose.
 
-EVIDENCE_DESCRIPTION_PROMPT = """Du bist ein österreichischer Zivilrechtsspezialist.
-Beschreibe auf Basis der folgenden Textabschnitte (Beweiswürdigung und Feststellungen)
+EVIDENCE_DESCRIPTION_PROMPT = """Du bist ein deutscher Zivilrechtsspezialist (BGB/ZPO).
+Beschreibe auf Basis der folgenden Textabschnitte (Beweiswürdigung und Feststellungen/Tatbestand)
 ausschließlich faktisch und ohne eigene Bewertung, welche Beweise das Gericht
 tatsächlich aufgenommen hat.
 
@@ -147,7 +150,7 @@ Regeln:
 BEWEISWÜRDIGUNG:
 {beweisw_rdigung}
 
-FESTSTELLUNGEN:
+FESTSTELLUNGEN / TATBESTAND:
 {feststellungen}"""
 
 
@@ -256,7 +259,7 @@ class OpenAIExtractor:
         messages = [
             {
                 "role": "system",
-                "content": "Du extrahierst Textabschnitte aus Gerichtsurteilen und gibst JSON zurück."
+                "content": "Du extrahierst Textabschnitte aus deutschen Zivilurteilen und gibst JSON zurück."
                 " Anonymisiere alle Personennamen.",
             },
             {"role": "user", "content": prompt},
@@ -284,6 +287,7 @@ class OpenAIExtractor:
                 return ""
             return str(val)
 
+        # Deutschen Zivilurteilen: "Tatbestand" entspricht "Feststellungen"
         klaegervorbringen = _to_str(raw_sections.get("klaegervorbringen", ""))
         beklagtenvorbringen = _to_str(raw_sections.get("beklagtenvorbringen", ""))
         feststellungen = _to_str(raw_sections.get("feststellungen", ""))
@@ -324,7 +328,7 @@ class OpenAIExtractor:
         messages = [
             {
                 "role": "system",
-                "content": "Du bist ein österreichischer Zivilrechtsspezialist. "
+                "content": "Du bist ein deutscher Zivilrechtsspezialist (BGB/ZPO). "
                 "Gib ausschließlich JSON zurück.",
             },
             {"role": "user", "content": prompt},

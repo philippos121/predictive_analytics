@@ -1,8 +1,9 @@
 """
 Litigation Data Extractor — Streamlit UI
 
-Structured extraction of legal data from Austrian civil judgment PDFs
-using OpenAI GPT-4o-mini and text-embedding-3-large.
+Strukturierte Erfassung deutscher Zivilurteile (Amts- und Landgerichte)
+aus TXT-Dateien via OpenAI GPT-4o-mini und text-embedding-3-large.
+Strafurteile werden automatisch herausgefiltert.
 """
 
 import json
@@ -33,7 +34,7 @@ from config import (
 )
 from data_extractor.data_manager import DataManager
 from data_extractor.openai_extractor import OpenAIExtractor
-from data_extractor.pdf_processor import PDFProcessingError, extract_text_from_pdf
+from data_extractor.txt_processor import StrafurteilError, TxtProcessingError, read_txt_file
 
 # ─── Page Config ────────────────────────────────────────────────────────────────
 
@@ -235,7 +236,7 @@ st.markdown("""
 def init_session_state():
     defaults = {
         "api_key": os.environ.get("OPENAI_API_KEY", ""),
-        "pdf_folder": "",
+        "txt_folder": "",
         "processing": False,
         "process_log": [],
         "current_file": "",
@@ -261,8 +262,8 @@ dm: DataManager = st.session_state.data_manager
 
 st.markdown(f"""
 <div class="app-header">
-    <h1>Litigation Data Extractor</h1>
-    <div class="subtitle">Strukturierte Erfassung österreichischer Zivilurteile &mdash; v{APP_VERSION} &mdash; {OPENAI_EXTRACTION_MODEL} / text-embedding-3-large</div>
+    <h1>Litigation Data Extractor &mdash; Deutsches Zivilrecht</h1>
+    <div class="subtitle">Strukturierte Erfassung deutscher Zivilurteile (AG/LG) aus TXT-Dateien &mdash; v{APP_VERSION} &mdash; {OPENAI_EXTRACTION_MODEL} / text-embedding-3-large</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -288,21 +289,21 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**Urteilsordner**")
-    pdf_folder = st.text_input(
+    txt_folder = st.text_input(
         "Pfad zum Urteilsordner",
-        value=st.session_state.pdf_folder,
+        value=st.session_state.txt_folder,
         placeholder="/pfad/zu/urteilen",
-        help="Ordner mit österreichischen Zivilurteilen als PDF",
+        help="Ordner mit deutschen Zivilurteilen als TXT-Dateien (AG/LG). Strafurteile werden automatisch gefiltert.",
     )
-    st.session_state.pdf_folder = pdf_folder
+    st.session_state.txt_folder = txt_folder
 
-    if pdf_folder:
-        folder = Path(pdf_folder)
+    if txt_folder:
+        folder = Path(txt_folder)
         if folder.exists() and folder.is_dir():
-            pdf_files = list(folder.glob("*.pdf")) + list(folder.glob("*.PDF"))
+            txt_files = list(folder.glob("*.txt")) + list(folder.glob("*.TXT"))
             processed = dm.get_processed_filenames()
-            pending = [f for f in pdf_files if f.name not in processed]
-            st.success(f"{len(pdf_files)} PDFs gefunden")
+            pending = [f for f in txt_files if f.name not in processed]
+            st.success(f"{len(txt_files)} TXT-Dateien gefunden")
             st.info(f"{len(pending)} noch nicht verarbeitet")
         else:
             st.error("Ordner nicht gefunden")
@@ -335,54 +336,54 @@ tab_extract, tab_dataset, tab_review, tab_manual = st.tabs([
 # ════════════════════════════════════════════════════════════════════════════════
 
 with tab_extract:
-    st.markdown('<div class="section-title">Automatische Datenextraktion aus PDF-Urteilen</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Automatische Datenextraktion aus TXT-Urteilen (AG/LG)</div>', unsafe_allow_html=True)
 
     col1, col2 = st.columns([3, 2])
 
     with col1:
         st.markdown("""
         <div class="pipeline-box">
-            <b>Verarbeitungspipeline:</b><br>
-            <span class="step">1</span> PDF-Textextraktion (PyMuPDF)<br>
-            <span class="step">2</span> Strukturierte Datenextraktion (GPT-4o-mini)<br>
+            <b>Verarbeitungspipeline (Deutsches Zivilrecht):</b><br>
+            <span class="step">1</span> TXT-Datei lesen &amp; Strafurteil-Erkennung (Keyword-Filter)<br>
+            <span class="step">2</span> Strukturierte Datenextraktion (GPT-4o-mini, BGB/ZPO)<br>
             <span class="step">3</span> Embedding-Vektoren (text-embedding-3-large, 3072 dim)<br>
             <span class="step">4</span> Persistierung im JSON-Dataset
         </div>
         """, unsafe_allow_html=True)
 
     with col2:
-        if st.session_state.pdf_folder and Path(st.session_state.pdf_folder).exists():
-            folder = Path(st.session_state.pdf_folder)
-            pdf_files = list(folder.glob("*.pdf")) + list(folder.glob("*.PDF"))
+        if st.session_state.txt_folder and Path(st.session_state.txt_folder).exists():
+            folder = Path(st.session_state.txt_folder)
+            txt_files = list(folder.glob("*.txt")) + list(folder.glob("*.TXT"))
             processed_fnames = dm.get_processed_filenames()
-            pending_files = [f for f in pdf_files if f.name not in processed_fnames]
+            pending_files = [f for f in txt_files if f.name not in processed_fnames]
 
-            st.metric("PDFs bereit zur Verarbeitung", len(pending_files))
+            st.metric("TXT-Dateien bereit", len(pending_files))
             st.metric("Bereits verarbeitet", len(processed_fnames))
 
     st.divider()
 
     # ── File Selection ───────────────────────────────────────────────────────────
-    if st.session_state.pdf_folder:
-        folder = Path(st.session_state.pdf_folder)
+    if st.session_state.txt_folder:
+        folder = Path(st.session_state.txt_folder)
         if folder.exists():
-            pdf_files = sorted(
-                list(folder.glob("*.pdf")) + list(folder.glob("*.PDF"))
+            txt_files = sorted(
+                list(folder.glob("*.txt")) + list(folder.glob("*.TXT"))
             )
             processed_fnames = dm.get_processed_filenames()
-            pending_files = [f for f in pdf_files if f.name not in processed_fnames]
+            pending_files = [f for f in txt_files if f.name not in processed_fnames]
 
             if pending_files:
-                st.markdown("**Ausstehende PDFs**")
+                st.markdown("**Ausstehende TXT-Dateien**")
                 process_mode = st.radio(
                     "Verarbeitungsmodus",
-                    ["Alle ausstehenden PDFs", "Ausgewählte PDFs"],
+                    ["Alle ausstehenden TXT-Dateien", "Ausgewählte TXT-Dateien"],
                     horizontal=True,
                 )
 
-                if process_mode == "Ausgewählte PDFs":
+                if process_mode == "Ausgewählte TXT-Dateien":
                     selected_files = st.multiselect(
-                        "PDFs auswählen",
+                        "TXT-Dateien auswählen",
                         [f.name for f in pending_files],
                         default=[f.name for f in pending_files[:3]],
                     )
@@ -413,31 +414,25 @@ with tab_extract:
                         status_text = st.empty()
                         log_container = st.container()
 
-                        results = {"success": 0, "error": 0, "errors": []}
-
-                        def progress_cb(msg, pct):
-                            pass  # Will be updated in loop
+                        results = {"success": 0, "error": 0, "gefiltert": 0}
 
                         extractor = OpenAIExtractor(st.session_state.api_key)
 
-                        for file_idx, pdf_path in enumerate(files_to_process):
+                        for file_idx, txt_path in enumerate(files_to_process):
                             file_pct_base = file_idx / len(files_to_process)
                             file_pct_step = 1.0 / len(files_to_process)
 
                             status_text.markdown(
-                                f"**Verarbeite:** `{pdf_path.name}` "
+                                f"**Verarbeite:** `{txt_path.name}` "
                                 f"({file_idx + 1}/{len(files_to_process)})"
                             )
 
                             try:
-                                # Step 1: Extract PDF text
+                                # Step 1: TXT lesen + Strafurteil-Filter
                                 progress_bar.progress(
                                     file_pct_base + file_pct_step * 0.1
                                 )
-                                text = extract_text_from_pdf(pdf_path)
-
-                                if len(text) < 200:
-                                    raise ValueError(f"Text zu kurz ({len(text)} Zeichen) — möglicherweise gescanntes PDF")
+                                text = read_txt_file(txt_path)
 
                                 # Step 2-4: OpenAI extraction + embeddings
                                 progress_holder = st.empty()
@@ -455,7 +450,7 @@ with tab_extract:
                                 case_id = dm.generate_case_id()
                                 dm.add_case(
                                     case_id=case_id,
-                                    filename=pdf_path.name,
+                                    filename=txt_path.name,
                                     structured=extracted["structured"],
                                     sections=extracted["sections"],
                                     embeddings=extracted["embeddings"],
@@ -464,24 +459,33 @@ with tab_extract:
                                 progress_holder.empty()
                                 results["success"] += 1
                                 st.session_state.process_log.append({
-                                    "file": pdf_path.name,
+                                    "file": txt_path.name,
                                     "status": "success",
                                     "case_id": case_id,
                                     "outcome": extracted["structured"].get("outcome"),
                                     "streitwert": extracted["structured"].get("streitwert_eur"),
                                 })
 
-                                log_container.success(f"OK  {pdf_path.name}  →  Fall-ID: `{case_id}`")
+                                log_container.success(f"OK  {txt_path.name}  →  Fall-ID: `{case_id}`")
 
-                            except Exception as e:
+                            except StrafurteilError as e:
+                                results["gefiltert"] += 1
+                                st.session_state.process_log.append({
+                                    "file": txt_path.name,
+                                    "status": "gefiltert (Strafurteil)",
+                                    "error": str(e),
+                                })
+                                log_container.warning(f"STRAFURTEIL gefiltert  {txt_path.name}")
+
+                            except (TxtProcessingError, Exception) as e:
                                 results["error"] += 1
                                 error_msg = str(e)
                                 st.session_state.process_log.append({
-                                    "file": pdf_path.name,
+                                    "file": txt_path.name,
                                     "status": "error",
                                     "error": error_msg,
                                 })
-                                log_container.error(f"FEHLER  {pdf_path.name}  →  {error_msg}")
+                                log_container.error(f"FEHLER  {txt_path.name}  →  {error_msg}")
 
                             progress_bar.progress(
                                 (file_idx + 1) / len(files_to_process)
@@ -493,13 +497,14 @@ with tab_extract:
                         progress_bar.empty()
 
                         st.markdown("---")
-                        col_r1, col_r2 = st.columns(2)
+                        col_r1, col_r2, col_r3 = st.columns(3)
                         col_r1.metric("Erfolgreich", results["success"])
-                        col_r2.metric("Fehler", results["error"])
+                        col_r2.metric("Strafurteile gefiltert", results["gefiltert"])
+                        col_r3.metric("Fehler", results["error"])
 
                         if results["success"] > 0:
                             st.success(
-                                f"Extraktion abgeschlossen. {results['success']} Urteile"
+                                f"Extraktion abgeschlossen. {results['success']} Zivilurteile"
                                 " wurden dem Dataset hinzugefügt."
                             )
                             st.markdown(
@@ -510,7 +515,7 @@ with tab_extract:
                             )
 
             else:
-                st.success("Alle PDFs in diesem Ordner wurden bereits verarbeitet.")
+                st.success("Alle TXT-Dateien in diesem Ordner wurden bereits verarbeitet.")
         else:
             st.info("Bitte geben Sie einen gültigen Ordnerpfad in der Seitenleiste ein.")
     else:
@@ -786,12 +791,12 @@ with tab_review:
                             "Gericht",
                             value=s.get("gericht", "") or "",
                         )
+                        _instanz_opts = ["", "AG", "LG", "OLG", "BGH"]
                         new_instanz = st.selectbox(
                             "Instanz",
-                            ["", "BG", "LG", "OLG", "OGH"],
-                            index=["", "BG", "LG", "OLG", "OGH"].index(
-                                s.get("instanz", "") or ""
-                            ) if s.get("instanz", "") in ["", "BG", "LG", "OLG", "OGH"] else 0,
+                            _instanz_opts,
+                            index=_instanz_opts.index(s.get("instanz", "") or "")
+                            if s.get("instanz", "") in _instanz_opts else 0,
                         )
 
                     with edit_col2:
@@ -948,14 +953,14 @@ with tab_manual:
 
         with m_col1:
             m_datum = st.text_input("Datum (YYYY-MM-DD)")
-            m_instanz = st.selectbox("Instanz", ["BG", "LG", "OLG", "OGH"])
+            m_instanz = st.selectbox("Instanz", ["AG", "LG", "OLG", "BGH"])
             m_streitwert = st.number_input("Streitwert (EUR)", min_value=0.0, step=100.0)
 
         with m_col2:
             m_claim_type = st.selectbox("Anspruchsart", CLAIM_TYPES + ["Andere"])
             m_anspruchsgruende = st.text_area(
                 "Anspruchsgrundlagen (eine pro Zeile)",
-                placeholder="§ 1295 ABGB\n§ 922 ABGB",
+                placeholder="§ 280 BGB\n§ 433 BGB\n§ 823 BGB",
                 height=100,
             )
             m_outcome = st.selectbox(
@@ -1110,7 +1115,7 @@ st.markdown("---")
 st.markdown(
     f"<div style='text-align:center;color:#888888;font-size:0.75rem;"
     f"font-family:IBM Plex Mono,monospace;letter-spacing:0.04em'>"
-    f"Predictive Litigation Analytics &nbsp;·&nbsp; v{APP_VERSION} &nbsp;·&nbsp; "
+    f"Predictive Litigation Analytics &nbsp;·&nbsp; Deutsches Zivilrecht (BGB/ZPO) &nbsp;·&nbsp; v{APP_VERSION} &nbsp;·&nbsp; "
     f"{OPENAI_EXTRACTION_MODEL} &nbsp;·&nbsp; text-embedding-3-large"
     f"</div>",
     unsafe_allow_html=True,

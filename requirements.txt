@@ -1,9 +1,6 @@
 # Predictive Litigation Analytics - Requirements
 # Python >= 3.10 required
-
-# PDF Processing
-PyMuPDF==1.24.5
-pdfplumber==0.11.1
+# Adapted for German civil law (BGB/ZPO) — TXT input, no PDF processing
 
 # OpenAI API
 openai>=1.35.0

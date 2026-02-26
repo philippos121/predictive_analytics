@@ -1,6 +1,7 @@
 """
 Shared configuration for the Predictive Litigation Analytics system.
-Adapted for German civil law (BGB) — Amtsgerichte and Landgerichte.
+Österreichisches Zivilrecht (ABGB/ZPO) — Eingabe: OGH-Urteile (TXT).
+Extrahiert werden: Erstgericht-Vorbringen der Parteien + Erstgericht-Entscheidung.
 """
 
 import os
@@ -62,54 +63,53 @@ OUTCOME_ICONS = {
 }
 
 # ─── Legal Claim Types (Anspruchsarten) ─────────────────────────────────────────
-# Typische Klagegegenstände vor Amts- und Landgerichten (deutsches Zivilrecht, BGB)
+# Typische Klagegegenstände im österreichischen Zivilrecht (ABGB/ZPO)
 CLAIM_TYPES = [
-    "Kaufpreisforderung",           # § 433 BGB
-    "Werkentgelt",                  # § 631 BGB
-    "Schadensersatz (Vertrag)",     # § 280 BGB
-    "Schadensersatz (Delikt)",      # § 823 BGB
-    "Gewährleistung",               # § 437 BGB
-    "Anfechtung / Irrtum",          # §§ 119, 123 BGB
-    "Ungerechtfertigte Bereicherung", # § 812 BGB
-    "Darlehensrückzahlung",         # § 488 BGB
-    "Miete / Pachtzins",            # § 535 BGB
-    "Herausgabe / Eigentümerklage", # § 985 BGB
-    "Unterlassung",                 # § 1004 BGB
-    "Feststellungsklage",           # § 256 ZPO
-    "Wechsel / Scheck",             # WG / ScheckG
-    "Unterhaltsklage",              # §§ 1601 ff. BGB
-    "Arbeitsentgelt",               # § 611a BGB
+    "Kaufpreisforderung",
+    "Werkentgelt",
+    "Schadenersatz (Vertrag)",
+    "Schadenersatz (Delikt)",
+    "Gewährleistung",
+    "Irrtum / Anfechtung",
+    "Ungerechtfertigte Bereicherung",
+    "Darlehensrückzahlung",
+    "Miete / Pachtzins",
+    "Herausgabe / Eigentümerklage",
+    "Unterlassung",
+    "Feststellungsklage",
+    "Wechsel / Scheck",
+    "Unterhaltsklage",
     "Sonstige Forderung",
 ]
 
 # ─── Defense Types (Einwendungen des Beklagten) ──────────────────────────────────
 DEFENSE_TYPES = [
-    "mangel",               # Sachmängel / Gewährleistung (§ 437 BGB)
-    "irrtum",               # Irrtum / Anfechtung (§§ 119, 123 BGB)
-    "nichterfuellung",      # Nichterfüllung / Einrede des nicht erfüllten Vertrags (§ 320 BGB)
-    "verjaehrung",          # Verjährung (§§ 195 ff. BGB)
-    "aufrechnung",          # Gegenforderung / Aufrechnung (§ 387 BGB)
-    "listige_irrefuehrung", # Arglistige Täuschung (§ 123 BGB)
-    "unmoeglichkeit",       # Unmöglichkeit der Leistung (§ 275 BGB)
-    "unzustaendigkeit",     # Unzuständigkeit des Gerichts (§§ 12 ff. ZPO)
+    "mangel",               # Sachmängel / Gewährleistung (§ 922 ABGB)
+    "irrtum",               # Irrtum (§ 871 ABGB)
+    "nichterfuellung",      # Nichterfüllung / Zug-um-Zug (§ 1052 ABGB)
+    "verjaehrung",          # Verjährung (§ 1478 ABGB)
+    "aufrechnung",          # Gegenforderung / Aufrechnung (§ 1438 ABGB)
+    "listige_irrefuehrung", # Arglistige Irreführung (§ 870 ABGB)
+    "unmoeglichkeit",       # Unmöglichkeit der Leistung (§ 878 ABGB)
+    "unzustaendigkeit",     # Unzuständigkeit des Gerichts (JN)
     "fehlende_aktivlegitimation",  # Fehlende Aktivlegitimation
     "keine_passivlegitimation",    # Fehlende Passivlegitimation
-    "zahlung_erfolgt",      # Zahlung bereits geleistet (§ 362 BGB)
+    "zahlung_erfolgt",      # Zahlung bereits geleistet (§ 1412 ABGB)
     "andere",               # Sonstige Einwendungen
 ]
 
 DEFENSE_LABELS = {
-    "mangel": "Sachmangel / Gewährleistung (§ 437 BGB)",
-    "irrtum": "Irrtum / Anfechtung (§§ 119, 123 BGB)",
-    "nichterfuellung": "Nichterfüllung (§ 320 BGB)",
-    "verjaehrung": "Verjährung (§§ 195 ff. BGB)",
-    "aufrechnung": "Aufrechnung / Gegenforderung (§ 387 BGB)",
-    "listige_irrefuehrung": "Arglistige Täuschung (§ 123 BGB)",
-    "unmoeglichkeit": "Unmöglichkeit der Leistung (§ 275 BGB)",
-    "unzustaendigkeit": "Unzuständigkeit (§§ 12 ff. ZPO)",
+    "mangel": "Sachmangel / Gewährleistung (§ 922 ABGB)",
+    "irrtum": "Irrtum (§ 871 ABGB)",
+    "nichterfuellung": "Nichterfüllung (§ 1052 ABGB)",
+    "verjaehrung": "Verjährung (§ 1478 ABGB)",
+    "aufrechnung": "Aufrechnung / Gegenforderung (§ 1438 ABGB)",
+    "listige_irrefuehrung": "Arglistige Täuschung (§ 870 ABGB)",
+    "unmoeglichkeit": "Unmöglichkeit der Leistung (§ 878 ABGB)",
+    "unzustaendigkeit": "Unzuständigkeit (JN)",
     "fehlende_aktivlegitimation": "Fehlende Aktivlegitimation",
     "keine_passivlegitimation": "Fehlende Passivlegitimation",
-    "zahlung_erfolgt": "Zahlung bereits erfolgt (§ 362 BGB)",
+    "zahlung_erfolgt": "Zahlung bereits erfolgt (§ 1412 ABGB)",
     "andere": "Sonstige Einwendungen",
 }
 
@@ -174,7 +174,7 @@ TRAINING_CONFIG = {
 }
 
 # ─── UI Configuration ───────────────────────────────────────────────────────────
-APP_TITLE_EXTRACTOR = "Litigation Data Extractor (Deutsches Zivilrecht)"
-APP_TITLE_MODEL = "Predictive Litigation Analytics (Deutsches Zivilrecht)"
-APP_VERSION = "2.0.0"
+APP_TITLE_EXTRACTOR = "Litigation Data Extractor (OGH-Urteile, ö. Zivilrecht)"
+APP_TITLE_MODEL = "Predictive Litigation Analytics (OGH-Datenbasis)"
+APP_VERSION = "2.1.0"
 APP_AUTHOR = "Predictive Litigation Analytics System"

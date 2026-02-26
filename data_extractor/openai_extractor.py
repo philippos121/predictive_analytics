@@ -1,7 +1,16 @@
 """
 OpenAI Extractor: Uses GPT-4o-mini and text-embedding-3-large to extract
-structured legal data and embeddings from German civil judgment text.
-Adapted for German law (BGB/ZPO) — Amtsgerichte and Landgerichte.
+structured legal data and embeddings from Austrian OGH civil judgments.
+
+Österreichisches Zivilrecht (ABGB/ZPO). Eingabe: OGH-Urteile (TXT).
+Der OGH legt den vollständigen Verfahrensgang offen — damit sind aus einem
+einzigen OGH-Urteil extrahierbar:
+  - Vorbringen des Klägers (beim Erstgericht)
+  - Vorbringen des Beklagten (beim Erstgericht)
+  - Entscheidung des ERSTGERICHTS (Trainings-Label)
+
+Entscheidungen des Berufungsgerichts (OLG) und des OGH selbst werden
+als Label NICHT verwendet — Ziel ist die Vorhersage erstinstanzlicher Ergebnisse.
 """
 
 import json
@@ -32,33 +41,45 @@ from config import (
 
 # ─── Extraction Prompt ──────────────────────────────────────────────────────────
 
-EXTRACTION_SYSTEM_PROMPT = """Du bist ein Experte für deutsches Zivilrecht (BGB, ZPO).
-Deine Aufgabe ist es, aus Texten deutscher Zivilurteile der Amts- und Landgerichte
-präzise strukturierte Daten zu extrahieren. Antworte ausschließlich mit validem JSON
-ohne jeglichen anderen Text.
+EXTRACTION_SYSTEM_PROMPT = """Du bist ein Experte für österreichisches Zivilrecht (ABGB, ZPO).
+Deine Aufgabe ist es, aus OGH-Urteilen (Oberster Gerichtshof) präzise strukturierte
+Daten zu extrahieren. Antworte ausschließlich mit validem JSON ohne jeglichen anderen Text.
 
-Wichtige Regeln:
+WICHTIG — Verfahrensgang im OGH-Urteil:
+OGH-Urteile enthalten Entscheidungen MEHRERER Instanzen. Du musst klar unterscheiden:
+  1. ERSTGERICHT (BG/LG): Die erste Instanz — deren Entscheidung ist das Trainings-Label.
+  2. BERUFUNGSGERICHT (OLG): Zweite Instanz — für den Outcome NICHT relevant.
+  3. OGH: Dritte Instanz (das vorliegende Urteil) — für den Outcome NICHT relevant.
+
+Für das Feld "outcome" extrahiere AUSSCHLIESSLICH das Ergebnis des ERSTGERICHTS.
+
+Weitere Regeln:
 - Extrahiere KEINE Namen von Richtern, Parteien oder Anwälten
-- Fokussiere auf anspruchsrelevante, materiell-rechtliche Inhalte
+- Fokussiere auf anspruchsrelevante, materiell-rechtliche Inhalte (ABGB, ZPO)
 - Bei fehlenden Informationen: null für Felder, [] für Listen, false für Boolean
-- Outcome: Beziehe dich auf den Ausgang aus Sicht des KLÄGERS
-- Rechtsgrundlagen: Verweise auf BGB, ZPO, HGB, etc. (deutsches Recht)
+- Outcome-Perspektive: aus Sicht des KLÄGERS beim ERSTGERICHT
 """
 
-EXTRACTION_USER_PROMPT = """Analysiere dieses deutsche Zivilurteil und extrahiere die folgenden Informationen als JSON:
+EXTRACTION_USER_PROMPT = """Analysiere dieses österreichische OGH-Zivilurteil und extrahiere
+die folgenden Informationen als JSON.
+
+ACHTUNG: "instanz", "gericht" und "outcome" beziehen sich auf das ERSTGERICHT —
+nicht auf das Berufungsgericht oder den OGH.
 
 {{
-  "datum": "YYYY-MM-DD oder null",
-  "gericht": "z.B. AG München, LG Berlin oder null (keine Richtername)",
-  "instanz": "AG" oder "LG" oder "OLG" oder "BGH" oder null,
+  "datum_ersturteil": "YYYY-MM-DD — Datum des Ersturteils oder null",
+  "datum_ogh": "YYYY-MM-DD — Datum des OGH-Urteils oder null",
+  "gericht": "Name des ERSTGERICHTS, z.B. BG Wien, LG Salzburg oder null (keine Richtername)",
+  "instanz": "BG" oder "LG" (Instanz des ERSTGERICHTS) oder null,
+
   "streitwert_eur": Zahl als float oder null,
   "streitwert_unbekannt": boolean,
 
   "anspruchsart": "Eine der folgenden: {claim_types_str} oder 'Andere'",
-  "anspruchsgruende": ["Liste der Rechtsgrundlagen, z.B. § 280 BGB, § 823 BGB, § 535 BGB"],
+  "anspruchsgruende": ["Rechtsgrundlagen aus dem Erstverfahren, z.B. § 1295 ABGB, § 922 ABGB, § 879 ABGB"],
 
-  "klaeger_anspruch_zusammenfassung": "Kurze sachliche Zusammenfassung was der Kläger begehrt (max 200 Wörter, KEINE Namen)",
-  "beklagter_vorbringen_zusammenfassung": "Kurze sachliche Zusammenfassung der Einwendungen (max 200 Wörter, KEINE Namen)",
+  "klaeger_anspruch_zusammenfassung": "Was hat der Kläger beim Erstgericht begehrt? (max 200 Wörter, KEINE Namen)",
+  "beklagter_vorbringen_zusammenfassung": "Welche Einwendungen hat der Beklagte beim Erstgericht erhoben? (max 200 Wörter, KEINE Namen)",
 
   "einwendungen": {{
     "mangel": boolean,
@@ -76,8 +97,8 @@ EXTRACTION_USER_PROMPT = """Analysiere dieses deutsche Zivilurteil und extrahier
     "andere_beschreibung": "Beschreibung sonstiger Einwendungen oder null"
   }},
 
-  "klaeger_beweismittel": ["Liste der Beweismittel des Klägers, z.B. Urkunden, Zeugen, Sachverständige"],
-  "beklagter_beweismittel": ["Liste der Beweismittel des Beklagten"],
+  "klaeger_beweismittel": ["Beweismittel des Klägers im Erstverfahren, z.B. Urkunden, Zeugen, Sachverständige"],
+  "beklagter_beweismittel": ["Beweismittel des Beklagten im Erstverfahren"],
   "sachverstaendiger_bestellt": boolean,
   "sachverstaendigen_fachgebiet": "z.B. Bautechnik, Medizin oder null",
 
@@ -85,51 +106,70 @@ EXTRACTION_USER_PROMPT = """Analysiere dieses deutsche Zivilurteil und extrahier
   "anzahl_verhandlungen": Zahl oder null,
 
   "outcome": 0 oder 1 oder 2,
-  "outcome_beschreibung": "Kurze Beschreibung des Urteilsergebnisses (KEINE Namen)",
+  "outcome_beschreibung": "Kurze Beschreibung der ERSTGERICHT-Entscheidung (KEINE Namen)",
   "zugesprochener_betrag_eur": float oder null,
   "zugesprochener_anteil_prozent": float zwischen 0 und 100 oder null,
 
-  "kostenentscheidung": "Kläger" oder "Beklagter" oder "Geteilt" oder null,
+  "kostenentscheidung_erstgericht": "Kläger" oder "Beklagter" oder "Geteilt" oder null,
 
-  "besonderheiten": ["Besondere rechtliche oder sachliche Besonderheiten des Falles"]
+  "besonderheiten": ["Besondere rechtliche oder sachliche Aspekte des Falls"]
 }}
 
-OUTCOME KODIERUNG:
-- 0 = Kläger UNTERLIEGT vollständig (Klage abgewiesen)
-- 1 = TEILWEISES Obsiegen/Unterliegen (Klage teilweise zugesprochen)
-- 2 = Kläger OBSIEGT vollständig (Klage vollständig zugesprochen)
+OUTCOME KODIERUNG (ERSTGERICHT):
+- 0 = Kläger UNTERLIEGT vollständig beim Erstgericht (Klage abgewiesen)
+- 1 = TEILWEISES Obsiegen/Unterliegen beim Erstgericht (Klage teilweise zugesprochen)
+- 2 = Kläger OBSIEGT vollständig beim Erstgericht (Klage vollständig zugesprochen)
 
-URTEILSTEXT:
+OGH-URTEILSTEXT:
 {text}"""
 
 
 # ─── Text Section Extraction Prompt ─────────────────────────────────────────────
+# Extrahiert aus dem OGH-Urteil die für das ML-Modell relevanten Textabschnitte.
+#
+# WICHTIG: Das OGH-Urteil enthält Argumentation mehrerer Instanzen.
+# Wir wollen NUR:
+#   - Das Vorbringen der Parteien beim ERSTGERICHT (vor dem BG/LG)
+#   - Die Sachverhaltsfeststellungen des ERSTGERICHTS
+#   - Die Beweiswürdigung des ERSTGERICHTS
+#   - Den Entscheidungstext des ERSTGERICHTS (für Label-Verifikation)
+#
+# Das Vorbringen vor dem Berufungsgericht, Revisionsgründe und OGH-Begründung
+# werden NICHT als ML-Input verwendet (wären Data Leakage für das Label).
 
-SECTION_EXTRACTION_PROMPT = """Extrahiere aus diesem deutschen Zivilurteil die folgenden Textabschnitte.
-Gib das Ergebnis als JSON zurück. Wenn ein Abschnitt nicht vorhanden ist, gib einen leeren String zurück.
-Entferne alle Namen von Personen (Richter, Parteien, Anwälte) - ersetze sie mit [KLÄGER], [BEKLAGTER], [RICHTER], [ANWALT].
+SECTION_EXTRACTION_PROMPT = """Du bist ein Experte für österreichisches Zivilrecht.
+Dieses Urteil ist ein OGH-Urteil, das den gesamten Verfahrensgang enthält.
+Extrahiere die folgenden Textabschnitte — sie beziehen sich ausschließlich auf
+das ERSTGERICHT (BG oder LG), NICHT auf Berufungsgericht oder OGH.
+
+Gib das Ergebnis als JSON zurück. Leerer String wenn Abschnitt nicht auffindbar.
+Ersetze ALLE Personennamen durch [KLÄGER], [BEKLAGTER], [RICHTER], [ANWALT].
 
 {{
-  "klaegervorbringen": "Vollständiger Text des Kläger-Vorbringens (anonymisiert)",
-  "beklagtenvorbringen": "Vollständiger Text des Beklagten-Vorbringens (anonymisiert)",
-  "feststellungen": "Vollständiger Text der Sachverhaltsfeststellungen / des Tatbestands (anonymisiert)",
-  "beweisw_rdigung": "Vollständiger Text der Beweiswürdigung (anonymisiert)"
+  "klaegervorbringen": "Vollständiger Text des Kläger-Vorbringens WIE VOR DEM ERSTGERICHT vorgebracht (anonymisiert). Enthält Klagebegehren, Tatsachenbehauptungen und rechtliche Argumentation des Klägers.",
+
+  "beklagtenvorbringen": "Vollständiger Text des Beklagten-Vorbringens WIE VOR DEM ERSTGERICHT vorgebracht (anonymisiert). Enthält Klagebeantwortung, Einwendungen und Gegenvorbringen des Beklagten.",
+
+  "feststellungen": "Sachverhaltsfeststellungen des ERSTGERICHTS (anonymisiert). Was hat das Erstgericht als erwiesen angenommen? NICHT die Feststellungen späterer Instanzen.",
+
+  "beweisw_rdigung": "Beweiswürdigung des ERSTGERICHTS (anonymisiert). Wie hat das Erstgericht die Beweise gewürdigt? NICHT die Beweiswürdigung späterer Instanzen.",
+
+  "erstgericht_entscheidung_text": "Entscheidungstext und Begründung des ERSTGERICHTS (anonymisiert). Was hat das BG/LG entschieden und wie begründet? NICHT die Entscheidung des Berufungsgerichts oder des OGH."
 }}
 
-URTEILSTEXT:
+OGH-URTEILSTEXT:
 {text}"""
 
 
 # ─── Evidence Description Generation Prompt ──────────────────────────────────────
 # Generiert eine faktische Beschreibung der aufgenommenen (!) Beweise aus
-# Beweiswürdigung + Feststellungen — ohne eigene Bewertung.
-# Zweck: Dieses Embedding kodiert welche Beweismittel das Gericht tatsächlich
-# aufgenommen hat, als neutralen Input für die Outcome-Prognose.
+# der Beweiswürdigung und den Feststellungen des ERSTGERICHTS — ohne Bewertung.
+# Zweck: Kodiert welche Beweismittel das Erstgericht tatsächlich aufgenommen hat.
 
-EVIDENCE_DESCRIPTION_PROMPT = """Du bist ein deutscher Zivilrechtsspezialist (BGB/ZPO).
-Beschreibe auf Basis der folgenden Textabschnitte (Beweiswürdigung und Feststellungen/Tatbestand)
-ausschließlich faktisch und ohne eigene Bewertung, welche Beweise das Gericht
-tatsächlich aufgenommen hat.
+EVIDENCE_DESCRIPTION_PROMPT = """Du bist ein österreichischer Zivilrechtsspezialist.
+Beschreibe auf Basis der folgenden Textabschnitte (Beweiswürdigung und Sachverhaltsfeststellungen
+des ERSTGERICHTS) ausschließlich faktisch und ohne eigene Bewertung, welche Beweise das
+Erstgericht tatsächlich aufgenommen hat.
 
 Gib ausschließlich ein JSON-Objekt zurück:
 {{
@@ -141,16 +181,16 @@ Regeln:
   'zwei Urkunden', 'ein Sachverständigengutachten')
 - Gib an, welche Partei welches Beweismittel beigebracht hat
 - Gib an, ob Beweismittel das Vorbringen einer Partei stützen oder widerlegen
-  (nur soweit aus Beweiswürdigung/Feststellungen eindeutig hervorgeht)
+  (nur soweit eindeutig aus der Beweiswürdigung hervorgeht)
 - KEINE eigene rechtliche Würdigung, KEINE Schlussfolgerungen
-- KEINE Namen von Personen — ersetze sie mit [KLÄGER], [BEKLAGTER], [ZEUGE_1] usw.
-- Wenn keine Beweise aufgenommen wurden, schreibe 'Keine Beweise aufgenommen.'
+- KEINE Namen — ersetze mit [KLÄGER], [BEKLAGTER], [ZEUGE_1] usw.
+- Wenn keine Beweise aufgenommen wurden: 'Keine Beweise aufgenommen.'
 - Maximale Länge: 400 Wörter
 
-BEWEISWÜRDIGUNG:
+BEWEISWÜRDIGUNG DES ERSTGERICHTS:
 {beweisw_rdigung}
 
-FESTSTELLUNGEN / TATBESTAND:
+SACHVERHALTSFESTSTELLUNGEN DES ERSTGERICHTS:
 {feststellungen}"""
 
 
@@ -239,19 +279,23 @@ class OpenAIExtractor:
 
     def extract_text_sections(self, text: str) -> dict[str, str]:
         """
-        Extract and anonymize text sections, then generate the evidence description.
+        Extrahiert und anonymisiert Textabschnitte aus einem OGH-Urteil.
 
         Pipeline:
-        1. GPT extrahiert klaegervorbringen, beklagtenvorbringen, feststellungen,
-           beweisw_rdigung aus dem Urteilstext (anonymisiert).
-        2. GPT generiert aufgenommene_beweise — eine faktische, wertungsfreie
-           Beschreibung der tatsächlich aufgenommenen Beweise — aus feststellungen
-           und beweisw_rdigung.
+        1. GPT extrahiert ausschließlich ERSTGERICHT-relevante Abschnitte:
+           klaegervorbringen, beklagtenvorbringen, feststellungen,
+           beweisw_rdigung, erstgericht_entscheidung_text (anonymisiert).
+           Berufungsgericht- und OGH-Abschnitte werden NICHT extrahiert.
+        2. GPT generiert aufgenommene_beweise — faktische, wertungsfreie
+           Beschreibung der vom Erstgericht aufgenommenen Beweise.
 
-        Rückgabe enthält alle Zwischenabschnitte sowie aufgenommene_beweise.
-        generate_embeddings() verwendet nur die drei Abschnitte aus EMBEDDING_SECTIONS.
+        Rückgabe enthält alle Abschnitte + aufgenommene_beweise.
+        generate_embeddings() verwendet nur EMBEDDING_SECTIONS:
+          [klaegervorbringen, beklagtenvorbringen, aufgenommene_beweise]
+        erstgericht_entscheidung_text wird nur gespeichert, nicht eingebettet
+        (vermeidet Data Leakage: Label soll nicht als Feature einfließen).
         """
-        self._log("Extrahiere Textabschnitte aus Urteil...", 0.4)
+        self._log("Extrahiere Erstgericht-Abschnitte aus OGH-Urteil...", 0.4)
 
         truncated_text = text[:20000]
         prompt = SECTION_EXTRACTION_PROMPT.format(text=truncated_text)
@@ -259,8 +303,9 @@ class OpenAIExtractor:
         messages = [
             {
                 "role": "system",
-                "content": "Du extrahierst Textabschnitte aus deutschen Zivilurteilen und gibst JSON zurück."
-                " Anonymisiere alle Personennamen.",
+                "content": "Du bist ein österreichischer Zivilrechtsspezialist. "
+                "Extrahiere Textabschnitte aus OGH-Urteilen — ausschließlich "
+                "die Erstgericht-Ebene. Gib JSON zurück. Anonymisiere Personennamen.",
             },
             {"role": "user", "content": prompt},
         ]
@@ -278,7 +323,6 @@ class OpenAIExtractor:
             if isinstance(val, str):
                 return val
             if isinstance(val, dict):
-                # GPT sometimes returns {"text": "..."} or similar
                 for k in ("text", "content", "value", "inhalt"):
                     if k in val and isinstance(val[k], str):
                         return val[k]
@@ -287,14 +331,16 @@ class OpenAIExtractor:
                 return ""
             return str(val)
 
-        # Deutschen Zivilurteilen: "Tatbestand" entspricht "Feststellungen"
         klaegervorbringen = _to_str(raw_sections.get("klaegervorbringen", ""))
         beklagtenvorbringen = _to_str(raw_sections.get("beklagtenvorbringen", ""))
         feststellungen = _to_str(raw_sections.get("feststellungen", ""))
         beweisw_rdigung = _to_str(raw_sections.get("beweisw_rdigung", ""))
+        erstgericht_entscheidung_text = _to_str(
+            raw_sections.get("erstgericht_entscheidung_text", "")
+        )
 
         # Step 2: Faktische Beweis-Beschreibung aus Beweiswürdigung + Feststellungen
-        self._log("Generiere Beweis-Beschreibung (aufgenommene Beweise)...", 0.5)
+        self._log("Generiere Beweis-Beschreibung (aufgenommene Beweise Erstgericht)...", 0.5)
         aufgenommene_beweise = self._generate_evidence_description(
             feststellungen=feststellungen,
             beweisw_rdigung=beweisw_rdigung,
@@ -305,6 +351,7 @@ class OpenAIExtractor:
             "beklagtenvorbringen": beklagtenvorbringen,
             "feststellungen": feststellungen,
             "beweisw_rdigung": beweisw_rdigung,
+            "erstgericht_entscheidung_text": erstgericht_entscheidung_text,
             "aufgenommene_beweise": aufgenommene_beweise,
         }
 
@@ -328,7 +375,7 @@ class OpenAIExtractor:
         messages = [
             {
                 "role": "system",
-                "content": "Du bist ein deutscher Zivilrechtsspezialist (BGB/ZPO). "
+                "content": "Du bist ein österreichischer Zivilrechtsspezialist (ABGB/ZPO). "
                 "Gib ausschließlich JSON zurück.",
             },
             {"role": "user", "content": prompt},
@@ -401,9 +448,12 @@ class OpenAIExtractor:
         return self.generate_embeddings(case_sections)
 
     def _validate_and_normalize(self, data: dict) -> dict:
-        """Validate and normalize extracted structured data."""
-        # Ensure required fields
+        """Validate and normalize extracted structured data from OGH judgment."""
+        # Ensure required fields — datum_ersturteil/datum_ogh statt datum
         defaults = {
+            "datum_ersturteil": None,
+            "datum_ogh": None,
+            # Backwards-compat: accept "datum" from older prompts
             "datum": None,
             "gericht": None,
             "instanz": None,
@@ -424,6 +474,8 @@ class OpenAIExtractor:
             "outcome_beschreibung": "",
             "zugesprochener_betrag_eur": None,
             "zugesprochener_anteil_prozent": None,
+            "kostenentscheidung_erstgericht": None,
+            # backwards compat
             "kostenentscheidung": None,
             "besonderheiten": [],
         }

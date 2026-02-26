@@ -43,15 +43,16 @@ class FeatureEngineer:
     - plaintiff_evidence_count      [1]
     - defendant_evidence_count      [1]
     - legal_basis_count             [1]
-    - court_level                   [4] (AG/LG/OLG/BGH one-hot)
+    - court_level                   [4] (BG/LG/OLG/OGH one-hot, bei OGH-Datenbasis = Erstgericht)
     - sachverstaendiger             [1]
     - has_aufrechnung               [1] (already in defense, redundant but useful)
     ─────────────────────────────────────────────────────
     Total: 1 + (len(CLAIM_TYPES)+1) + len(DEFENSE_TYPES) + 1 + 1 + 1 + 4 + 1 = varies
     """
 
-    # Deutsche Gerichtsinstanzen: Amtsgericht, Landgericht, Oberlandesgericht, BGH
-    INSTANZ_CLASSES = ["AG", "LG", "OLG", "BGH"]
+    # Österreichische Gerichtsinstanzen: Bezirksgericht, Landesgericht, OLG, OGH
+    # Bei OGH-Datenbasis: "instanz" = Erstgericht (BG oder LG)
+    INSTANZ_CLASSES = ["BG", "LG", "OLG", "OGH"]
 
     def __init__(self):
         self.scaler = StandardScaler()

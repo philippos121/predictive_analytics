@@ -1,9 +1,9 @@
 """
 Litigation Data Extractor — Streamlit UI
 
-Strukturierte Erfassung deutscher Zivilurteile (Amts- und Landgerichte)
-aus TXT-Dateien via OpenAI GPT-4o-mini und text-embedding-3-large.
-Strafurteile werden automatisch herausgefiltert.
+Strukturierte Erfassung österreichischer OGH-Zivilurteile aus TXT-Dateien.
+Extrahiert werden: Erstgericht-Vorbringen der Parteien + Erstgericht-Entscheidung.
+OGH-Strafurteile werden automatisch herausgefiltert (nur Zivilsenat).
 """
 
 import json
@@ -262,8 +262,8 @@ dm: DataManager = st.session_state.data_manager
 
 st.markdown(f"""
 <div class="app-header">
-    <h1>Litigation Data Extractor &mdash; Deutsches Zivilrecht</h1>
-    <div class="subtitle">Strukturierte Erfassung deutscher Zivilurteile (AG/LG) aus TXT-Dateien &mdash; v{APP_VERSION} &mdash; {OPENAI_EXTRACTION_MODEL} / text-embedding-3-large</div>
+    <h1>Litigation Data Extractor &mdash; OGH-Urteile (ö. Zivilrecht)</h1>
+    <div class="subtitle">Strukturierte Erfassung aus OGH-Urteilen (TXT) &mdash; Erstgericht-Vorbringen &amp; Ersturteil &mdash; v{APP_VERSION} &mdash; {OPENAI_EXTRACTION_MODEL}</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -290,10 +290,10 @@ with st.sidebar:
     st.divider()
     st.markdown("**Urteilsordner**")
     txt_folder = st.text_input(
-        "Pfad zum Urteilsordner",
+        "Pfad zum OGH-Urteilsordner",
         value=st.session_state.txt_folder,
-        placeholder="/pfad/zu/urteilen",
-        help="Ordner mit deutschen Zivilurteilen als TXT-Dateien (AG/LG). Strafurteile werden automatisch gefiltert.",
+        placeholder="/pfad/zu/ogh-urteilen",
+        help="Ordner mit OGH-Zivilurteilen als TXT-Dateien. OGH-Strafurteile werden automatisch herausgefiltert.",
     )
     st.session_state.txt_folder = txt_folder
 
@@ -336,18 +336,18 @@ tab_extract, tab_dataset, tab_review, tab_manual = st.tabs([
 # ════════════════════════════════════════════════════════════════════════════════
 
 with tab_extract:
-    st.markdown('<div class="section-title">Automatische Datenextraktion aus TXT-Urteilen (AG/LG)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Automatische Datenextraktion aus OGH-Zivilurteilen (TXT)</div>', unsafe_allow_html=True)
 
     col1, col2 = st.columns([3, 2])
 
     with col1:
         st.markdown("""
         <div class="pipeline-box">
-            <b>Verarbeitungspipeline (Deutsches Zivilrecht):</b><br>
-            <span class="step">1</span> TXT-Datei lesen &amp; Strafurteil-Erkennung (Keyword-Filter)<br>
-            <span class="step">2</span> Strukturierte Datenextraktion (GPT-4o-mini, BGB/ZPO)<br>
+            <b>Verarbeitungspipeline (Österr. Zivilrecht / OGH):</b><br>
+            <span class="step">1</span> TXT-Datei lesen &amp; OGH-Strafurteil-Erkennung (Keyword-Filter)<br>
+            <span class="step">2</span> Extraktion: Kläger-/Beklagten-Vorbringen + Ersturteil (GPT-4o-mini, ABGB/ZPO)<br>
             <span class="step">3</span> Embedding-Vektoren (text-embedding-3-large, 3072 dim)<br>
-            <span class="step">4</span> Persistierung im JSON-Dataset
+            <span class="step">4</span> Persistierung im JSON-Dataset (Trainings-Label = Erstgericht-Outcome)
         </div>
         """, unsafe_allow_html=True)
 
@@ -475,7 +475,7 @@ with tab_extract:
                                     "status": "gefiltert (Strafurteil)",
                                     "error": str(e),
                                 })
-                                log_container.warning(f"STRAFURTEIL gefiltert  {txt_path.name}")
+                                log_container.warning(f"OGH-STRAFURTEIL gefiltert  {txt_path.name}")
 
                             except (TxtProcessingError, Exception) as e:
                                 results["error"] += 1
@@ -499,7 +499,7 @@ with tab_extract:
                         st.markdown("---")
                         col_r1, col_r2, col_r3 = st.columns(3)
                         col_r1.metric("Erfolgreich", results["success"])
-                        col_r2.metric("Strafurteile gefiltert", results["gefiltert"])
+                        col_r2.metric("OGH-Strafurteile gefiltert", results["gefiltert"])
                         col_r3.metric("Fehler", results["error"])
 
                         if results["success"] > 0:
@@ -791,7 +791,7 @@ with tab_review:
                             "Gericht",
                             value=s.get("gericht", "") or "",
                         )
-                        _instanz_opts = ["", "AG", "LG", "OLG", "BGH"]
+                        _instanz_opts = ["", "BG", "LG", "OLG", "OGH"]
                         new_instanz = st.selectbox(
                             "Instanz",
                             _instanz_opts,
@@ -952,15 +952,15 @@ with tab_manual:
         m_col1, m_col2, m_col3 = st.columns(3)
 
         with m_col1:
-            m_datum = st.text_input("Datum (YYYY-MM-DD)")
-            m_instanz = st.selectbox("Instanz", ["AG", "LG", "OLG", "BGH"])
+            m_datum = st.text_input("Datum Ersturteil (YYYY-MM-DD)")
+            m_instanz = st.selectbox("Instanz des Erstgerichts", ["BG", "LG", "OLG", "OGH"])
             m_streitwert = st.number_input("Streitwert (EUR)", min_value=0.0, step=100.0)
 
         with m_col2:
             m_claim_type = st.selectbox("Anspruchsart", CLAIM_TYPES + ["Andere"])
             m_anspruchsgruende = st.text_area(
                 "Anspruchsgrundlagen (eine pro Zeile)",
-                placeholder="§ 280 BGB\n§ 433 BGB\n§ 823 BGB",
+                placeholder="§ 1295 ABGB\n§ 922 ABGB\n§ 879 ABGB",
                 height=100,
             )
             m_outcome = st.selectbox(
@@ -1115,7 +1115,7 @@ st.markdown("---")
 st.markdown(
     f"<div style='text-align:center;color:#888888;font-size:0.75rem;"
     f"font-family:IBM Plex Mono,monospace;letter-spacing:0.04em'>"
-    f"Predictive Litigation Analytics &nbsp;·&nbsp; Deutsches Zivilrecht (BGB/ZPO) &nbsp;·&nbsp; v{APP_VERSION} &nbsp;·&nbsp; "
+    f"Predictive Litigation Analytics &nbsp;·&nbsp; Österr. Zivilrecht (ABGB/ZPO) &nbsp;·&nbsp; OGH-Datenbasis &nbsp;·&nbsp; v{APP_VERSION} &nbsp;·&nbsp; "
     f"{OPENAI_EXTRACTION_MODEL} &nbsp;·&nbsp; text-embedding-3-large"
     f"</div>",
     unsafe_allow_html=True,

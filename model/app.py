@@ -349,10 +349,12 @@ with st.sidebar:
         _tier_hint = f"Tier: Klein (<{NN_SMALL_THRESHOLD} Fälle)"
     st.markdown(f"**Training-Parameter** — {_tier_hint}")
     epochs = st.slider("Max. Epochen", 50, 600, _default_cfg["epochs"], 50)
+    _lr_options = [1e-4, 3e-4, 5e-4, 1e-3, 3e-3, 5e-3]
+    _lr_default = min(_lr_options, key=lambda x: abs(x - _default_cfg["learning_rate"]))
     lr = st.select_slider(
         "Lernrate",
-        [1e-4, 5e-4, 1e-3, 5e-3],
-        value=_default_cfg["learning_rate"],
+        _lr_options,
+        value=_lr_default,
         format_func=lambda x: f"{x:.0e}",
     )
     early_stop = st.slider(

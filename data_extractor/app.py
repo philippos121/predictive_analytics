@@ -31,7 +31,10 @@ from config import (
     OPENAI_EXTRACTION_MODEL,
     OUTCOME_COLORS,
     OUTCOME_LABELS,
+    PARALLEL_WORKERS,
 )
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from data_extractor.data_manager import DataManager
 from data_extractor.openai_extractor import OpenAIExtractor
 from data_extractor.txt_processor import StrafurteilError, TxtProcessingError, read_txt_file
@@ -401,11 +404,21 @@ with tab_extract:
                             disabled=not st.session_state.api_key or st.session_state.processing,
                             use_container_width=True,
                         )
+                    with col_btn2:
+                        n_workers = st.number_input(
+                            "Parallele Workers",
+                            min_value=1,
+                            max_value=20,
+                            value=PARALLEL_WORKERS,
+                            step=1,
+                            help="Anzahl gleichzeitig verarbeiteter OGH-Urteile. "
+                                 "Empfehlung: 5 bei Tier-1 OpenAI-Account.",
+                        )
 
                     if not st.session_state.api_key:
                         st.warning("Bitte OpenAI API Key in der Seitenleiste eingeben.")
 
-                    # ── Processing Logic ─────────────────────────────────────────
+                    # ── Processing Logic (parallel) ──────────────────────────────
                     if start_btn and not st.session_state.processing:
                         st.session_state.processing = True
                         st.session_state.process_log = []
@@ -414,87 +427,109 @@ with tab_extract:
                         status_text = st.empty()
                         log_container = st.container()
 
+                        api_key = st.session_state.api_key
+                        n_files = len(files_to_process)
+
+                        # ── Worker function (runs in thread pool) ────────────────
+                        def _extract_worker(txt_path: Path) -> dict:
+                            """
+                            Verarbeitet ein OGH-Urteil komplett (TXT lesen →
+                            GPT-Extraktion → Embeddings parallel).
+                            Jeder Worker bekommt seinen eigenen OpenAI-Client.
+                            """
+                            try:
+                                text = read_txt_file(txt_path)
+                                extractor = OpenAIExtractor(api_key)
+                                extracted = extractor.process_judgment(text)
+                                return {
+                                    "status": "success",
+                                    "file": txt_path.name,
+                                    "extracted": extracted,
+                                }
+                            except StrafurteilError as e:
+                                return {
+                                    "status": "gefiltert",
+                                    "file": txt_path.name,
+                                    "error": str(e),
+                                }
+                            except Exception as e:
+                                return {
+                                    "status": "error",
+                                    "file": txt_path.name,
+                                    "error": str(e),
+                                }
+
+                        # ── Phase 1: Parallel extraction ─────────────────────────
+                        status_text.markdown(
+                            f"**Extrahiere parallel** ({n_workers} Workers) ..."
+                        )
+                        raw_results: list[dict] = []
+
+                        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                            futures = {
+                                pool.submit(_extract_worker, f): f
+                                for f in files_to_process
+                            }
+                            for completed_idx, future in enumerate(
+                                as_completed(futures), start=1
+                            ):
+                                res = future.result()
+                                raw_results.append(res)
+                                progress_bar.progress(completed_idx / n_files * 0.9)
+
+                                if res["status"] == "success":
+                                    log_container.success(f"OK  {res['file']}")
+                                elif res["status"] == "gefiltert":
+                                    log_container.warning(
+                                        f"OGH-STRAFURTEIL gefiltert  {res['file']}"
+                                    )
+                                else:
+                                    log_container.error(
+                                        f"FEHLER  {res['file']}  →  {res['error']}"
+                                    )
+
+                        # ── Phase 2: Sequential save to DataManager ───────────────
+                        status_text.markdown("**Speichere in Dataset...**")
                         results = {"success": 0, "error": 0, "gefiltert": 0}
 
-                        extractor = OpenAIExtractor(st.session_state.api_key)
-
-                        for file_idx, txt_path in enumerate(files_to_process):
-                            file_pct_base = file_idx / len(files_to_process)
-                            file_pct_step = 1.0 / len(files_to_process)
-
-                            status_text.markdown(
-                                f"**Verarbeite:** `{txt_path.name}` "
-                                f"({file_idx + 1}/{len(files_to_process)})"
-                            )
-
-                            try:
-                                # Step 1: TXT lesen + Strafurteil-Filter
-                                progress_bar.progress(
-                                    file_pct_base + file_pct_step * 0.1
-                                )
-                                text = read_txt_file(txt_path)
-
-                                # Step 2-4: OpenAI extraction + embeddings
-                                progress_holder = st.empty()
-
-                                def progress_cb(msg, pct):
-                                    progress_bar.progress(
-                                        file_pct_base + file_pct_step * (0.1 + pct * 0.85)
-                                    )
-                                    progress_holder.markdown(f"_{msg}_")
-
-                                extractor.progress_callback = progress_cb
-                                extracted = extractor.process_judgment(text)
-
-                                # Step 5: Save to dataset
+                        for res in raw_results:
+                            if res["status"] == "success":
+                                extracted = res["extracted"]
                                 case_id = dm.generate_case_id()
                                 dm.add_case(
                                     case_id=case_id,
-                                    filename=txt_path.name,
+                                    filename=res["file"],
                                     structured=extracted["structured"],
                                     sections=extracted["sections"],
                                     embeddings=extracted["embeddings"],
                                 )
-
-                                progress_holder.empty()
                                 results["success"] += 1
                                 st.session_state.process_log.append({
-                                    "file": txt_path.name,
+                                    "file": res["file"],
                                     "status": "success",
                                     "case_id": case_id,
                                     "outcome": extracted["structured"].get("outcome"),
                                     "streitwert": extracted["structured"].get("streitwert_eur"),
                                 })
-
-                                log_container.success(f"OK  {txt_path.name}  →  Fall-ID: `{case_id}`")
-
-                            except StrafurteilError as e:
+                            elif res["status"] == "gefiltert":
                                 results["gefiltert"] += 1
                                 st.session_state.process_log.append({
-                                    "file": txt_path.name,
-                                    "status": "gefiltert (Strafurteil)",
-                                    "error": str(e),
+                                    "file": res["file"],
+                                    "status": "gefiltert (OGH-Strafurteil)",
+                                    "error": res.get("error", ""),
                                 })
-                                log_container.warning(f"OGH-STRAFURTEIL gefiltert  {txt_path.name}")
-
-                            except (TxtProcessingError, Exception) as e:
+                            else:
                                 results["error"] += 1
-                                error_msg = str(e)
                                 st.session_state.process_log.append({
-                                    "file": txt_path.name,
+                                    "file": res["file"],
                                     "status": "error",
-                                    "error": error_msg,
+                                    "error": res.get("error", ""),
                                 })
-                                log_container.error(f"FEHLER  {txt_path.name}  →  {error_msg}")
 
-                            progress_bar.progress(
-                                (file_idx + 1) / len(files_to_process)
-                            )
-
-                        # Done
+                        # ── Done ─────────────────────────────────────────────────
                         st.session_state.processing = False
                         status_text.empty()
-                        progress_bar.empty()
+                        progress_bar.progress(1.0)
 
                         st.markdown("---")
                         col_r1, col_r2, col_r3 = st.columns(3)

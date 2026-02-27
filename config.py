@@ -31,17 +31,23 @@ KNN_FILE = MODELS_DIR / "litigation_knn.pkl"
 KNN_THRESHOLD = 50
 
 # ─── OpenAI Configuration ───────────────────────────────────────────────────────
-# NOTE: "GPT 5.2 mini" does not exist as an OpenAI model (as of 2026).
-# Using gpt-4o-mini as the state-of-the-art cost-efficient model.
-# Update OPENAI_EXTRACTION_MODEL when newer models are available.
-OPENAI_EXTRACTION_MODEL = "gpt-4o-mini"
+# gpt-4.1-mini: released April 2025, cost-efficient with 1M context window.
+# Pricing: $0.40/1M input tokens, $1.60/1M output tokens.
+# Update OPENAI_EXTRACTION_MODEL when newer models are released.
+OPENAI_EXTRACTION_MODEL = "gpt-4.1-mini"
 OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
 EMBEDDING_DIM = 3072  # Dimension of text-embedding-3-large
 
-# API rate limiting
-OPENAI_REQUEST_DELAY_SEC = 0.5       # Delay between API requests
+# API rate limiting (per worker thread)
+OPENAI_REQUEST_DELAY_SEC = 0.3       # Delay between sequential API calls within one file
 OPENAI_MAX_RETRIES = 5
 OPENAI_RETRY_DELAY_SEC = 2.0
+
+# ─── Parallelization ────────────────────────────────────────────────────────────
+# Number of parallel extraction workers (each worker = 1 OGH-Urteil gleichzeitig).
+# Embeddings within each file are always parallelized (3 calls gleichzeitig).
+# Empfehlung: 5 Workers bei Tier-1 OpenAI-Account (10k RPM).
+PARALLEL_WORKERS = 5
 
 # ─── Outcome Labels ─────────────────────────────────────────────────────────────
 OUTCOME_LABELS = {

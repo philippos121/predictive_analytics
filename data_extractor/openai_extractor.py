@@ -16,6 +16,7 @@ als Label NICHT verwendet — Ziel ist die Vorhersage erstinstanzlicher Ergebnis
 import json
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -392,21 +393,27 @@ class OpenAIExtractor:
 
     def generate_embeddings(self, sections: dict[str, str]) -> dict[str, list[float]]:
         """
-        Generate embedding vectors for each text section.
-        Returns dict mapping section name to embedding vector.
+        Generate embedding vectors for all text sections in parallel.
+
+        Alle EMBEDDING_SECTIONS werden gleichzeitig eingebettet (ThreadPoolExecutor).
+        Statt 3 sequenzieller API-Calls → 1 paralleler Batch → ~3× schneller.
         """
-        embeddings = {}
-        total = len(EMBEDDING_SECTIONS)
+        self._log(
+            f"Generiere {len(EMBEDDING_SECTIONS)} Embeddings parallel...", 0.65
+        )
 
-        for i, section_key in enumerate(EMBEDDING_SECTIONS):
-            self._log(
-                f"Generiere Embedding für: {section_key} ({i+1}/{total})...",
-                0.6 + (i / total) * 0.35,
-            )
+        def _embed(section_key: str) -> tuple[str, list[float]]:
             text = sections.get(section_key, "")
-            embeddings[section_key] = self._get_embedding(text)
-            time.sleep(OPENAI_REQUEST_DELAY_SEC)
+            return section_key, self._get_embedding(text)
 
+        embeddings: dict[str, list[float]] = {}
+        with ThreadPoolExecutor(max_workers=len(EMBEDDING_SECTIONS)) as pool:
+            futures = {pool.submit(_embed, key): key for key in EMBEDDING_SECTIONS}
+            for future in as_completed(futures):
+                key, vec = future.result()
+                embeddings[key] = vec
+
+        self._log("Embeddings fertig.", 0.95)
         return embeddings
 
     def process_judgment(self, text: str) -> dict[str, Any]:

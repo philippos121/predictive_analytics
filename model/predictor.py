@@ -231,20 +231,23 @@ class LitigationPredictor:
         new_beklagter_text: Optional[str] = None,
         new_beweise_text: Optional[str] = None,
         api_key: Optional[str] = None,
+        original_embeddings: Optional[dict] = None,
     ) -> dict:
         """
         Vorhersage nach neuem Vorbringen / Gegenvorbringen.
 
         Re-embedded die aktualisierten Texte und berechnet eine neue Vorhersage.
-        Ermöglicht die Einschätzung, wie sich neues Prozessvorbringen auf die
-        Erfolgsaussichten auswirkt.
+        Unveränderte Sektionen verwenden die original_embeddings, damit die
+        Vorhersage nicht durch Null-Vektoren verzerrt wird.
 
         Args:
-            original_case_dict: Ursprüngliche Falldaten (strukturiert)
-            new_klaeger_text:   Aktualisiertes / ergänztes Kläger-Vorbringen
-            new_beklagter_text: Aktualisiertes Beklagten-Vorbringen / Gegenvorbringen
-            new_beweise_text:   Aktualisierte Beweise
-            api_key:            OpenAI API-Key für Embedding
+            original_case_dict:  Ursprüngliche Falldaten (strukturiert)
+            new_klaeger_text:    Aktualisiertes / ergänztes Kläger-Vorbringen
+            new_beklagter_text:  Aktualisiertes Beklagten-Vorbringen / Gegenvorbringen
+            new_beweise_text:    Aktualisierte Beweise
+            api_key:             OpenAI API-Key für Embedding
+            original_embeddings: Embeddings aus der ursprünglichen Vorhersage
+                                  (unveränderte Sektionen werden daraus übernommen)
 
         Returns:
             Neues predict()-Ergebnis mit aktualisierten Embeddings
@@ -267,7 +270,12 @@ class LitigationPredictor:
             except Exception as e:
                 raise RuntimeError(f"Embedding-Fehler bei neuem Vorbringen: {e}") from e
 
-        return self.predict(original_case_dict, new_embeddings)
+        # Merge: original_embeddings als Basis, neue Embeddings überschreiben
+        # die geänderten Sektionen. So erhalten unveränderte Sektionen ihre
+        # ursprünglichen Vektoren statt Null-Vektoren.
+        merged_embeddings = {**(original_embeddings or {}), **new_embeddings}
+
+        return self.predict(original_case_dict, merged_embeddings)
 
     def _get_recommendation(self, ev_probability: float) -> str:
         if ev_probability >= 0.70:

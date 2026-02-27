@@ -269,6 +269,7 @@ def init_session():
         "prediction_result": None,
         "prediction_case_dict": None,   # Falldaten der letzten Vorhersage
         "prediction_sections": {},      # Textsektionen (für Re-Embedding)
+        "prediction_embeddings": {},    # Embedding-Vektoren der letzten Vorhersage
         "juristic_analysis": None,      # Ergebnis der juristischen Analyse
         "ratg_result": None,            # RATG-Kostenberechnung
         "ev_result": None,
@@ -890,12 +891,20 @@ with tab_predict:
                         embeddings = extractor.generate_embeddings(sections)
                     except Exception as e:
                         st.warning(f"Embedding-Fehler: {e} — Null-Vektoren werden verwendet.")
+            elif not st.session_state.openai_api_key and (p_klaeger_text or p_beklagter_text or p_aufgenommene_beweise):
+                st.warning(
+                    "Kein OpenAI API-Key gesetzt — Textvorbringen wird **nicht** als Embedding "
+                    "in die Vorhersage einbezogen. Die Vorhersage basiert ausschließlich auf den "
+                    "strukturierten Merkmalen (Streitwert, Anspruchsart, Einwendungen etc.). "
+                    "Bitte API-Key in der Sidebar eintragen, damit Textänderungen das Ergebnis beeinflussen."
+                )
 
             with st.spinner("Berechne Vorhersage..."):
                 result = st.session_state.predictor.predict(case_dict, embeddings)
                 st.session_state.prediction_result = result
                 st.session_state.prediction_case_dict = case_dict
                 st.session_state.prediction_sections = sections
+                st.session_state.prediction_embeddings = embeddings
                 # Reset downstream results when new prediction is made
                 st.session_state.juristic_analysis = None
                 st.session_state.ratg_result = None
@@ -1456,6 +1465,7 @@ with tab_ev:
                             new_beklagter_text=new_beklagter or None,
                             new_beweise_text=new_beweise or None,
                             api_key=st.session_state.openai_api_key,
+                            original_embeddings=st.session_state.prediction_embeddings,
                         )
                         st.session_state.updated_prediction = updated
                     except Exception as e:

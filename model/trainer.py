@@ -20,8 +20,15 @@ from config import (
     KNN_FILE,
     KNN_THRESHOLD,
     MODEL_CHECKPOINT,
+    NN_CONFIG,
+    NN_CONFIG_MEDIUM,
+    NN_CONFIG_LARGE,
+    NN_SMALL_THRESHOLD,
+    NN_MEDIUM_THRESHOLD,
     SCALER_FILE,
     TRAINING_CONFIG,
+    TRAINING_CONFIG_MEDIUM,
+    TRAINING_CONFIG_LARGE,
     TRAINING_HISTORY_FILE,
 )
 from model.feature_engineer import (
@@ -108,9 +115,16 @@ class LitigationTrainer:
 
         return train_ds, val_ds, full_ds, feature_dim
 
-    def build_model(self, structured_dim: int) -> LitigationClassifier:
-        """Initialize the neural network."""
-        model = LitigationClassifier(structured_dim=structured_dim)
+    def build_model(
+        self,
+        structured_dim: int,
+        nn_config: Optional[dict] = None,
+    ) -> LitigationClassifier:
+        """Initialize the neural network with the given (or default) config."""
+        kwargs = {"structured_dim": structured_dim}
+        if nn_config is not None:
+            kwargs["config"] = nn_config
+        model = LitigationClassifier(**kwargs)
         model = model.to(self.device)
         self.model = model
         return model
@@ -147,6 +161,47 @@ class LitigationTrainer:
         # Neural network path — clear any previous kNN
         self.knn = None
 
+        # ── Tier-adaptive architecture + training config ──────────────────────────
+        # Pick NN architecture and training hyper-parameters based on dataset size.
+        # User-supplied overrides in self.config (epochs / lr / early_stop from UI)
+        # take precedence over tier defaults for those three keys.
+        if n_labeled < NN_SMALL_THRESHOLD:
+            active_nn_config = NN_CONFIG
+            tier_config = TRAINING_CONFIG
+            config_tier = "klein"
+            # FocalLoss γ=2.0: focus on hard examples in small datasets
+            _focal_gamma = 2.0
+            _label_smoothing = 0.0
+        elif n_labeled < NN_MEDIUM_THRESHOLD:
+            active_nn_config = NN_CONFIG_MEDIUM
+            tier_config = TRAINING_CONFIG_MEDIUM
+            config_tier = "mittel"
+            _focal_gamma = 1.5
+            _label_smoothing = 0.05
+        else:
+            active_nn_config = NN_CONFIG_LARGE
+            tier_config = TRAINING_CONFIG_LARGE
+            config_tier = "groß"
+            # CE with label smoothing is more stable than Focal for balanced 3-class
+            _focal_gamma = 0.0
+            _label_smoothing = 0.10
+
+        # Merge: tier defaults are the base; user UI values override epochs/lr/patience
+        USER_KEYS = {"epochs", "learning_rate", "early_stopping_patience"}
+        effective_config = {
+            **tier_config,
+            **{k: v for k, v in self.config.items() if k in USER_KEYS},
+            # preserve non-overrideable keys that may differ between tiers
+        }
+
+        self._log(
+            phase="tier_selected",
+            config_tier=config_tier,
+            n_labeled=n_labeled,
+            dropout_emb=active_nn_config["dropout_embedding"],
+            weight_decay=tier_config["weight_decay"],
+        )
+
         start_time = time.time()
 
         # ── Data Preparation ─────────────────────────────────────────────────────
@@ -167,7 +222,7 @@ class LitigationTrainer:
                 "Mindestens 5 Fälle mit Outcome-Label erforderlich."
             )
 
-        batch_size = min(self.config["batch_size"], len(train_ds))
+        batch_size = min(effective_config["batch_size"], len(train_ds))
 
         train_loader = DataLoader(
             train_ds,
@@ -185,7 +240,7 @@ class LitigationTrainer:
         ) if len(val_ds) > 0 else None
 
         # ── Model & Optimizer ────────────────────────────────────────────────────
-        model = self.build_model(feature_dim)
+        model = self.build_model(feature_dim, nn_config=active_nn_config)
 
         self._log(
             phase="model_built",
@@ -193,26 +248,32 @@ class LitigationTrainer:
             device=str(self.device),
         )
 
-        # Class-weighted Focal Loss
+        # Adaptive loss: Focal for small/medium, label-smoothed CE for large
         class_weights = compute_class_weights(cases).to(self.device)
-        criterion = FocalLoss(gamma=2.0, alpha=class_weights)
+        if _focal_gamma > 0:
+            criterion = FocalLoss(gamma=_focal_gamma, alpha=class_weights)
+        else:
+            criterion = nn.CrossEntropyLoss(
+                weight=class_weights,
+                label_smoothing=_label_smoothing,
+            )
 
         optimizer = torch.optim.AdamW(
             model.parameters(),
-            lr=self.config["learning_rate"],
-            weight_decay=self.config["weight_decay"],
+            lr=effective_config["learning_rate"],
+            weight_decay=tier_config["weight_decay"],
         )
 
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
             mode="min",
-            factor=self.config["lr_scheduler_factor"],
-            patience=self.config["lr_scheduler_patience"],
+            factor=effective_config["lr_scheduler_factor"],
+            patience=effective_config["lr_scheduler_patience"],
             verbose=False,
         )
 
         early_stopping = EarlyStopping(
-            patience=self.config["early_stopping_patience"]
+            patience=effective_config["early_stopping_patience"]
         )
 
         best_val_acc = 0.0
@@ -220,7 +281,7 @@ class LitigationTrainer:
         best_state_dict = None
 
         # ── Training Loop ────────────────────────────────────────────────────────
-        for epoch in range(1, self.config["epochs"] + 1):
+        for epoch in range(1, effective_config["epochs"] + 1):
             # Train
             model.train()
             train_loss, train_correct, train_total = 0.0, 0, 0

@@ -35,10 +35,14 @@ from config import (
     KNN_THRESHOLD,
     LEGAL_ANALYSIS_MODEL,
     MODEL_CHECKPOINT,
+    NN_MEDIUM_THRESHOLD,
+    NN_SMALL_THRESHOLD,
     OUTCOME_COLORS,
     OUTCOME_ICONS,
     OUTCOME_LABELS,
     TRAINING_CONFIG,
+    TRAINING_CONFIG_MEDIUM,
+    TRAINING_CONFIG_LARGE,
     TRAINING_HISTORY_FILE,
 )
 from data_extractor.data_manager import DataManager
@@ -329,17 +333,31 @@ with st.sidebar:
         )
 
     st.divider()
-    st.markdown("**Training-Parameter**")
-    epochs = st.slider("Max. Epochen", 50, 500, TRAINING_CONFIG["epochs"], 50)
+    # Pick tier-appropriate defaults based on current dataset size
+    _n_labeled = sum(
+        1 for c in dm.get_cases()
+        if c.get("structured", {}).get("outcome") is not None
+    ) if dm.get_cases() else 0
+    if _n_labeled >= NN_MEDIUM_THRESHOLD:
+        _default_cfg = TRAINING_CONFIG_LARGE
+        _tier_hint = f"Tier: Groß (≥{NN_MEDIUM_THRESHOLD} Fälle)"
+    elif _n_labeled >= NN_SMALL_THRESHOLD:
+        _default_cfg = TRAINING_CONFIG_MEDIUM
+        _tier_hint = f"Tier: Mittel (≥{NN_SMALL_THRESHOLD} Fälle)"
+    else:
+        _default_cfg = TRAINING_CONFIG
+        _tier_hint = f"Tier: Klein (<{NN_SMALL_THRESHOLD} Fälle)"
+    st.markdown(f"**Training-Parameter** — {_tier_hint}")
+    epochs = st.slider("Max. Epochen", 50, 600, _default_cfg["epochs"], 50)
     lr = st.select_slider(
         "Lernrate",
         [1e-4, 5e-4, 1e-3, 5e-3],
-        value=TRAINING_CONFIG["learning_rate"],
+        value=_default_cfg["learning_rate"],
         format_func=lambda x: f"{x:.0e}",
     )
     early_stop = st.slider(
         "Early Stopping (Epochen)",
-        10, 60, TRAINING_CONFIG["early_stopping_patience"], 5,
+        10, 80, _default_cfg["early_stopping_patience"], 5,
     )
 
     st.divider()
@@ -480,7 +498,21 @@ with tab_train:
         def progress_cb(**kwargs):
             phase = kwargs.get("phase", "")
 
-            if phase == "preparing":
+            if phase == "tier_selected":
+                _tier_labels = {
+                    "klein": "Klein (<150 Fälle)",
+                    "mittel": "Mittel (150–599 Fälle)",
+                    "groß": "Groß (≥600 Fälle)",
+                }
+                tier = kwargs.get("config_tier", "?")
+                st.session_state.training_log.append(
+                    f'[INFO] Datensatz-Tier: {_tier_labels.get(tier, tier)} | '
+                    f'{kwargs["n_labeled"]} gelabelte Fälle | '
+                    f'Dropout: {kwargs["dropout_emb"]:.0%} | '
+                    f'Weight-Decay: {kwargs["weight_decay"]:.0e}'
+                )
+
+            elif phase == "preparing":
                 log_container.markdown(
                     f'<div class="training-log"><div class="log-line log-info">'
                     f'[INFO] {kwargs.get("message", "")}</div></div>',

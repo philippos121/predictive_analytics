@@ -143,32 +143,60 @@ EMBEDDING_SECTION_LABELS = {
     "aufgenommene_beweise": "Aufgenommene Beweise",
 }
 
-# ─── Neural Network Configuration ───────────────────────────────────────────────
-# Dimensionen sind auf kleine Datensätze (50–300 Fälle) ausgelegt.
-# Die Embeddings (text-embedding-3-large) sind bereits hochwertige Repräsentationen,
-# sodass einfache Projektionen ausreichen. Ein zu tiefes Netz würde bei wenigen
-# Fällen overfittten.
+# ─── Adaptive Model-Size Thresholds ─────────────────────────────────────────────
+# trainer.py selects one of three configs automatically based on n_labeled cases.
+#   < NN_SMALL_THRESHOLD  → small  (kNN or tiny NN; heavy overfit risk)
+#   < NN_MEDIUM_THRESHOLD → medium (moderate capacity + regularization)
+#   ≥ NN_MEDIUM_THRESHOLD → large  (full capacity + strong regularization)
+NN_SMALL_THRESHOLD = 150
+NN_MEDIUM_THRESHOLD = 600
+
+# ─── Neural Network Configurations ──────────────────────────────────────────────
+# text-embedding-3-large outputs 3072-dim vectors that are already highly semantic.
+# The first projection layer (3072 → hidden_dim) dominates parameter count, so
+# we keep hidden_dim fixed across tiers and instead scale depth + regularization.
 #
-# Parameteranzahl ca.:
-#   3 × EmbeddingEncoder (3072→256→128):  ~2,5 Mio.
-#   StructuredEncoder (37→64→64):         ~6,5 K
-#   Fusion (448→128→3):                   ~58 K
-#   Gesamt: ~2,56 Mio.  (früher: ~5,7 Mio.)
-#
-# Für >500 Fälle können embedding_hidden_dim=512, embedding_output_dim=256
-# und fusion_dims=[256, 128] gesetzt werden.
-NN_CONFIG = {
-    "embedding_hidden_dim": 256,     # Intermediate dim per embedding encoder
-    "embedding_output_dim": 128,     # Output dim per embedding encoder
-    "structured_hidden_dim": 64,     # Structured feature encoder hidden dim
-    "fusion_dims": [128],            # Single hidden fusion layer (448 → 128 → 3)
-    "dropout_embedding": 0.3,
-    "dropout_fusion": 0.3,
-    "num_classes": 3,                # win / partial / loss
+# Small  (50–149 cases)   — ~2.56M params; mild dropout
+# Medium (150–599 cases)  — ~2.57M params; deeper fusion, more dropout
+# Large  (≥ 600 cases)    — ~2.82M params; deepest fusion, heavy dropout + L2
+
+NN_CONFIG = {                        # Small / backward-compatible default
+    "embedding_hidden_dim": 256,
+    "embedding_output_dim": 128,
+    "structured_hidden_dim": 64,
+    "fusion_dims": [128],
+    "dropout_embedding": 0.30,
+    "dropout_fusion": 0.30,
+    "num_classes": 3,
 }
 
-# ─── Training Configuration ─────────────────────────────────────────────────────
-TRAINING_CONFIG = {
+NN_CONFIG_MEDIUM = {                 # Medium: deeper fusion, moderate dropout
+    "embedding_hidden_dim": 256,
+    "embedding_output_dim": 128,
+    "structured_hidden_dim": 128,
+    "fusion_dims": [256, 128],
+    "dropout_embedding": 0.40,
+    "dropout_fusion": 0.40,
+    "num_classes": 3,
+}
+
+NN_CONFIG_LARGE = {                  # Large: deep fusion, heavy dropout/L2
+    "embedding_hidden_dim": 256,
+    "embedding_output_dim": 128,
+    "structured_hidden_dim": 128,
+    "fusion_dims": [512, 256],
+    "dropout_embedding": 0.50,
+    "dropout_fusion": 0.45,
+    "num_classes": 3,
+}
+
+# ─── Training Configurations ─────────────────────────────────────────────────────
+# Base (small): current defaults kept for backward compatibility.
+# Medium / Large: lower LR, larger batch, higher weight-decay, more epochs.
+# User-settable UI params (epochs, learning_rate, early_stopping_patience)
+# are applied on top of these when explicitly changed in the sidebar.
+
+TRAINING_CONFIG = {                  # Small / backward-compatible default
     "epochs": 200,
     "batch_size": 16,
     "learning_rate": 1e-3,
@@ -176,6 +204,32 @@ TRAINING_CONFIG = {
     "lr_scheduler_patience": 15,
     "lr_scheduler_factor": 0.5,
     "early_stopping_patience": 30,
+    "val_split": 0.2,
+    "random_seed": 42,
+    "gradient_clip": 1.0,
+}
+
+TRAINING_CONFIG_MEDIUM = {
+    "epochs": 300,
+    "batch_size": 32,
+    "learning_rate": 5e-4,
+    "weight_decay": 5e-4,
+    "lr_scheduler_patience": 20,
+    "lr_scheduler_factor": 0.5,
+    "early_stopping_patience": 45,
+    "val_split": 0.2,
+    "random_seed": 42,
+    "gradient_clip": 1.0,
+}
+
+TRAINING_CONFIG_LARGE = {
+    "epochs": 400,
+    "batch_size": 32,
+    "learning_rate": 3e-4,
+    "weight_decay": 1e-3,
+    "lr_scheduler_patience": 25,
+    "lr_scheduler_factor": 0.5,
+    "early_stopping_patience": 60,
     "val_split": 0.2,
     "random_seed": 42,
     "gradient_clip": 1.0,

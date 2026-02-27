@@ -323,10 +323,14 @@ with st.sidebar:
     st.divider()
     st.markdown("**Training-Parameter**")
     epochs = st.slider("Max. Epochen", 50, 500, TRAINING_CONFIG["epochs"], 50)
+    _lr_options = [1e-4, 3e-4, 5e-4, 1e-3, 3e-3, 5e-3]
+    _lr_default = TRAINING_CONFIG["learning_rate"]
+    if _lr_default not in _lr_options:
+        _lr_default = min(_lr_options, key=lambda x: abs(x - _lr_default))
     lr = st.select_slider(
         "Lernrate",
-        [1e-4, 5e-4, 1e-3, 5e-3],
-        value=TRAINING_CONFIG["learning_rate"],
+        _lr_options,
+        value=_lr_default,
         format_func=lambda x: f"{x:.0e}",
     )
     early_stop = st.slider(

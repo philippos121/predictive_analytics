@@ -853,12 +853,7 @@ with tab_predict:
                 p_beklagter_text = st.text_area(
                     "Beklagten-Vorbringen",
                     placeholder="Einwendungen des Beklagten…",
-                    height=90,
-                )
-                p_aufgenommene_beweise = st.text_area(
-                    "Aufgenommene Beweise",
-                    placeholder="Art und Anzahl der aufgenommenen Beweise (ohne Bewertung)…",
-                    height=90,
+                    height=110,
                 )
 
                 predict_btn = st.form_submit_button(
@@ -882,11 +877,10 @@ with tab_predict:
             sections = {
                 "klaegervorbringen": p_klaeger_text,
                 "beklagtenvorbringen": p_beklagter_text,
-                "aufgenommene_beweise": p_aufgenommene_beweise,
             }
 
             embeddings = {}
-            if st.session_state.openai_api_key and (p_klaeger_text or p_beklagter_text or p_aufgenommene_beweise):
+            if st.session_state.openai_api_key and (p_klaeger_text or p_beklagter_text):
                 with st.spinner("Generiere Embeddings via OpenAI..."):
                     try:
                         from data_extractor.openai_extractor import OpenAIExtractor
@@ -894,7 +888,7 @@ with tab_predict:
                         embeddings = extractor.generate_embeddings(sections)
                     except Exception as e:
                         st.warning(f"Embedding-Fehler: {e} — Null-Vektoren werden verwendet.")
-            elif not st.session_state.openai_api_key and (p_klaeger_text or p_beklagter_text or p_aufgenommene_beweise):
+            elif not st.session_state.openai_api_key and (p_klaeger_text or p_beklagter_text):
                 st.warning(
                     "Kein OpenAI API-Key gesetzt — Textvorbringen wird **nicht** als Embedding "
                     "in die Vorhersage einbezogen. Die Vorhersage basiert ausschließlich auf den "

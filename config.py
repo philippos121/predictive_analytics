@@ -155,45 +155,48 @@ NN_MEDIUM_THRESHOLD = 600
 # The first projection layer (3072 → hidden_dim) dominates parameter count, so
 # we keep hidden_dim fixed across tiers and instead scale depth + regularization.
 #
-# Small  (50–149 cases)   — ~2.56M params; mild dropout
-# Medium (150–599 cases)  — ~2.57M params; deeper fusion, more dropout
-# Large  (≥ 600 cases)    — ~2.82M params; deepest fusion, heavy dropout + L2
+# fusion_input with SectionAttention = (n_sections + 1) × emb_output_dim
+#   = (3 + 1) × 128 = 512  (attention adds one extra attended summary vector)
+#
+# Small  (50–149 cases)   — no attention, mild dropout, 2-layer encoder
+# Medium (150–599 cases)  — attention, moderate dropout, 2-layer encoder
+# Large  (≥ 600 cases)    — attention, heavy dropout, single-layer encoder + noise
 
 NN_CONFIG = {                        # Small / backward-compatible default
-    "embedding_hidden_dim": 256,
+    "embedding_hidden_dim": 256,     # Two-layer: 3072 → 256 → 128
     "embedding_output_dim": 128,
-    "structured_hidden_dim": 64,
-    "fusion_dims": [128],
+    "use_section_attention": False,  # Off for small datasets (avoid overfitting)
+    "fusion_dims": [256, 128],       # fusion_input = 3×128 = 384 → 256 → 128 → 3
     "dropout_embedding": 0.30,
     "dropout_fusion": 0.30,
     "num_classes": 3,
 }
 
-NN_CONFIG_MEDIUM = {                 # Medium: reduced hidden, deeper fusion, moderate dropout
-    "embedding_hidden_dim": 128,     # Reduced from 256: 3072×128 vs 3072×256 → 50 % fewer params
+NN_CONFIG_MEDIUM = {                 # Medium: two-layer encoder + attention, moderate dropout
+    "embedding_hidden_dim": 128,     # 3072 → 128 → 128; 50 % fewer first-layer params vs 256
     "embedding_output_dim": 128,
     "embedding_noise_std": 0.01,     # Light Gaussian noise on embeddings
-    "structured_hidden_dim": 128,
-    "fusion_dims": [256, 128],
+    "use_section_attention": True,   # Attention over the 3 text sections
+    "fusion_dims": [256, 128],       # fusion_input = (3+1)×128 = 512 → 256 → 128 → 3
     "dropout_embedding": 0.40,
     "dropout_fusion": 0.40,
     "num_classes": 3,
 }
 
-NN_CONFIG_LARGE = {                  # Large: single-layer encoder, heavy dropout/L2 + noise
-    "embedding_hidden_dim": 0,       # Single linear projection 3072→128 (no hidden layer)
-    "embedding_output_dim": 128,     # 3 × (3072×128) ≈ 1.18 M vs 2.4 M → −50 %
+NN_CONFIG_LARGE = {                  # Large: single-layer encoder + attention + noise, heavy dropout
+    "embedding_hidden_dim": 0,       # Single projection 3072 → 128; −50 % vs two-layer
+    "embedding_output_dim": 128,
     "embedding_noise_std": 0.02,     # Gaussian noise (strong regularization)
-    "structured_hidden_dim": 128,
-    "fusion_dims": [512, 256],
+    "use_section_attention": True,   # Attention over the 3 text sections
+    "fusion_dims": [256, 128],       # fusion_input = (3+1)×128 = 512 → 256 → 128 → 3
     "dropout_embedding": 0.50,
     "dropout_fusion": 0.45,
     "num_classes": 3,
 }
 
 # ─── Training Configurations ─────────────────────────────────────────────────────
-# Base (small): current defaults kept for backward compatibility.
-# Medium / Large: lower LR, larger batch, higher weight-decay, more epochs.
+# Base (small): fast convergence, no label smoothing.
+# Medium / Large: lower LR, larger batch, higher weight-decay, label smoothing.
 # User-settable UI params (epochs, learning_rate, early_stopping_patience)
 # are applied on top of these when explicitly changed in the sidebar.
 
@@ -208,6 +211,7 @@ TRAINING_CONFIG = {                  # Small / backward-compatible default
     "val_split": 0.2,
     "random_seed": 42,
     "gradient_clip": 1.0,
+    "label_smoothing": 0.0,          # Off for small datasets
 }
 
 TRAINING_CONFIG_MEDIUM = {
@@ -221,6 +225,7 @@ TRAINING_CONFIG_MEDIUM = {
     "val_split": 0.2,
     "random_seed": 42,
     "gradient_clip": 1.0,
+    "label_smoothing": 0.1,          # Prevents overconfident predictions
 }
 
 TRAINING_CONFIG_LARGE = {
@@ -234,6 +239,7 @@ TRAINING_CONFIG_LARGE = {
     "val_split": 0.2,
     "random_seed": 42,
     "gradient_clip": 1.0,
+    "label_smoothing": 0.1,          # Prevents overconfident predictions
 }
 
 # ─── UI Configuration ───────────────────────────────────────────────────────────

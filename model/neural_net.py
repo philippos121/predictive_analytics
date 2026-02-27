@@ -2,9 +2,10 @@
 Neural Network Architecture for Predictive Litigation Analytics.
 
 Embedding-only architecture:
-1. Text embeddings (3 sections × 3072-dim) via per-section encoders
+1. Text embeddings (n sections × 3072-dim) via per-section encoders
    - klaegervorbringen, beklagtenvorbringen, aufgenommene_beweise
-2. Flat fusion MLP (one hidden layer) for final classification
+2. Optional cross-section attention (SectionAttention) to weight sections
+3. Flat fusion MLP for final classification
 
 Output: 3-class (Unterliegen / Teilweise / Obsiegen)
 """
@@ -97,18 +98,50 @@ class EmbeddingEncoder(nn.Module):
         return self.encoder(x)
 
 
+class SectionAttention(nn.Module):
+    """
+    Learnable attention weights over the encoded text sections.
+
+    Instead of treating klaegervorbringen, beklagtenvorbringen, and
+    aufgenommene_beweise as equally important, this module learns which
+    section is most predictive for each case.  The output is an attended
+    summary vector concatenated alongside the per-section encodings in
+    the fusion step, giving the model both the raw detail and the
+    weighted highlight.
+    """
+
+    def __init__(self, section_dim: int):
+        super().__init__()
+        self.score = nn.Linear(section_dim, 1, bias=True)
+
+    def forward(self, encoded_sections: list[torch.Tensor]) -> torch.Tensor:
+        """
+        Args:
+            encoded_sections: list of (batch, section_dim) tensors
+
+        Returns:
+            attended: (batch, section_dim) weighted-sum representation
+        """
+        stacked = torch.stack(encoded_sections, dim=1)       # (batch, n, dim)
+        scores = self.score(stacked).squeeze(-1)             # (batch, n)
+        weights = F.softmax(scores, dim=-1)                  # (batch, n)
+        attended = (stacked * weights.unsqueeze(-1)).sum(dim=1)  # (batch, dim)
+        return attended
+
+
 class LitigationClassifier(nn.Module):
     """
     Main classification model for Austrian civil case outcome prediction.
 
-    Architecture (optimiert für kleine Datensätze, 50–300 Fälle):
-    - 3 EmbeddingEncoders (je ein Encoder pro Textabschnitt):
+    Architecture (rein embedding-basiert, 3-tier adaptive):
+    - n EmbeddingEncoders (je ein Encoder pro Textabschnitt):
         klaegervorbringen, beklagtenvorbringen, aufgenommene_beweise
-    - Flaches Fusion-MLP (ein Hidden Layer)
+    - Optional SectionAttention (learnable weights over sections)
+    - Flat fusion MLP
     - 3-class output (0=Unterliegen, 1=Teilweise, 2=Obsiegen)
 
-    Rein embedding-basiert: keine strukturierten Merkmale (Streitwert,
-    Anspruchsart etc.) — Training und Inference verwenden identische Inputs.
+    Keine strukturierten Merkmale — Training und Inference verwenden
+    identische Inputs (Textfelder der Parteien).
     """
 
     def __init__(self, config: dict = NN_CONFIG, **kwargs):
@@ -134,8 +167,16 @@ class LitigationClassifier(nn.Module):
             for _ in range(n_sections)
         ])
 
-        # Fusion network: concatenation of all section encodings
-        fusion_input_dim = n_sections * emb_output_dim
+        # Optional cross-section attention
+        self.use_section_attention = config.get("use_section_attention", False)
+        if self.use_section_attention:
+            self.section_attention = SectionAttention(section_dim=emb_output_dim)
+
+        # Fusion: per-section encodings + optional attended summary
+        # With attention: (n_sections + 1) * emb_output_dim
+        # Without:        n_sections * emb_output_dim
+        attn_extra = emb_output_dim if self.use_section_attention else 0
+        fusion_input_dim = n_sections * emb_output_dim + attn_extra
         layers = []
         prev_dim = fusion_input_dim
         for dim in fusion_dims:
@@ -178,11 +219,16 @@ class LitigationClassifier(nn.Module):
             for encoder, emb in zip(self.embedding_encoders, embeddings)
         ]  # List of (batch, emb_output_dim)
 
-        # Fuse all section encodings
-        fused = torch.cat(encoded_sections, dim=-1)  # (batch, n*emb_out)
-        fused = self.fusion(fused)
+        # Concatenate per-section encodings
+        section_concat = torch.cat(encoded_sections, dim=-1)  # (batch, n*emb_out)
 
-        # Classify
+        # Optional attended summary over sections
+        if self.use_section_attention:
+            attended = self.section_attention(encoded_sections)  # (batch, emb_out)
+            section_concat = torch.cat([section_concat, attended], dim=-1)
+
+        # Fuse and classify
+        fused = self.fusion(section_concat)
         logits = self.classifier(fused)
         probs = F.softmax(logits, dim=-1)
 
@@ -206,6 +252,7 @@ class LitigationClassifier(nn.Module):
             "embedding_sections": len(EMBEDDING_SECTIONS),
             "embedding_dim_input": EMBEDDING_DIM,
             "embedding_dim_output": self.config["embedding_output_dim"],
+            "use_section_attention": self.use_section_attention,
             "fusion_dims": self.config["fusion_dims"],
             "num_classes": self.config["num_classes"],
         }
@@ -215,15 +262,49 @@ class FocalLoss(nn.Module):
     """
     Focal Loss for handling class imbalance in litigation outcomes.
     Focuses training on hard examples.
+
+    label_smoothing > 0 prevents overconfident predictions — useful for
+    small legal datasets where ground-truth labels carry inherent uncertainty.
+    Focal weighting is still computed on hard targets for correct emphasis.
     """
 
-    def __init__(self, gamma: float = 2.0, alpha: torch.Tensor = None):
+    def __init__(
+        self,
+        gamma: float = 2.0,
+        alpha: torch.Tensor = None,
+        label_smoothing: float = 0.0,
+        num_classes: int = 3,
+    ):
         super().__init__()
         self.gamma = gamma
         self.alpha = alpha
+        self.label_smoothing = label_smoothing
+        self.num_classes = num_classes
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        ce_loss = F.cross_entropy(logits, targets, weight=self.alpha, reduction="none")
-        pt = torch.exp(-ce_loss)
-        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
-        return focal_loss.mean()
+        num_classes = logits.size(-1)
+
+        if self.label_smoothing > 0.0:
+            # Build soft targets: (1 - ε) * one_hot + ε / K
+            with torch.no_grad():
+                smooth_val = self.label_smoothing / num_classes
+                soft_targets = torch.full_like(logits, smooth_val)
+                soft_targets.scatter_(
+                    1,
+                    targets.unsqueeze(1),
+                    1.0 - self.label_smoothing + smooth_val,
+                )
+            log_probs = F.log_softmax(logits, dim=-1)
+            ce_smooth = -(soft_targets * log_probs).sum(dim=-1)   # (batch,)
+
+            # Focal weight still based on hard targets for correct emphasis
+            ce_hard = F.cross_entropy(logits, targets, weight=self.alpha, reduction="none")
+            pt = torch.exp(-ce_hard)
+            focal_weight = (1 - pt) ** self.gamma
+
+            return (focal_weight * ce_smooth).mean()
+        else:
+            ce_loss = F.cross_entropy(logits, targets, weight=self.alpha, reduction="none")
+            pt = torch.exp(-ce_loss)
+            focal_loss = ((1 - pt) ** self.gamma) * ce_loss
+            return focal_loss.mean()

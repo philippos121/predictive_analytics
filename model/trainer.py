@@ -242,10 +242,15 @@ class LitigationTrainer:
             device=str(self.device),
         )
 
-        # Adaptive loss: Focal for small/medium, label-smoothed CE for large
+        # Adaptive loss: Focal (with optional label smoothing) for small/medium,
+        # label-smoothed CE for large (γ=0)
         class_weights = compute_class_weights(cases).to(self.device)
         if _focal_gamma > 0:
-            criterion = FocalLoss(gamma=_focal_gamma, alpha=class_weights)
+            criterion = FocalLoss(
+                gamma=_focal_gamma,
+                alpha=class_weights,
+                label_smoothing=_label_smoothing,
+            )
         else:
             criterion = nn.CrossEntropyLoss(
                 weight=class_weights,
@@ -572,16 +577,29 @@ class LitigationTrainer:
         }
 
     def _evaluate_full_knn(self, cases: list[dict], embeddings_dict: dict) -> dict:
-        """Evaluate kNN predictor on the full labeled dataset."""
+        """
+        Evaluate kNN with leave-one-out cross-validation.
+
+        Each case is predicted by a kNN fitted on all *other* labeled cases,
+        which gives an honest accuracy estimate (no self-match inflation).
+        """
+        labeled = [
+            c for c in cases
+            if c["structured"].get("outcome") is not None
+            and c["case_id"] in embeddings_dict
+        ]
+
         all_preds, all_labels, all_probs = [], [], []
-        for case in cases:
-            case_id = case["case_id"]
-            outcome = case["structured"].get("outcome")
-            if outcome is None or case_id not in embeddings_dict:
+        for i, case in enumerate(labeled):
+            loo_cases = [c for j, c in enumerate(labeled) if j != i]
+            if not loo_cases:
                 continue
-            result = self.knn.predict(embeddings_dict[case_id])
+            loo_emb = {c["case_id"]: embeddings_dict[c["case_id"]] for c in loo_cases}
+            loo_knn = KNNLitigationPredictor(k=min(self.knn.k, len(loo_cases)))
+            loo_knn.fit(loo_cases, loo_emb)
+            result = loo_knn.predict(embeddings_dict[case["case_id"]])
             all_preds.append(result["predicted_outcome"])
-            all_labels.append(int(outcome))
+            all_labels.append(int(case["structured"]["outcome"]))
             all_probs.append([result["p_loss"], result["p_partial"], result["p_win"]])
 
         if not all_preds:

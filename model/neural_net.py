@@ -21,11 +21,38 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import EMBEDDING_DIM, EMBEDDING_SECTIONS, NN_CONFIG
 
 
+class GaussianNoise(nn.Module):
+    """
+    Training-time Gaussian noise for embedding regularization.
+
+    Acts as a stochastic data-augmentation layer on the raw embedding vectors:
+    adds ε ~ N(0, std²) per-element during training, identity during eval.
+    Even small std (0.01–0.03) over 3072-dim inputs provides strong implicit
+    regularization without distorting the embedding geometry.
+    """
+
+    def __init__(self, std: float = 0.0):
+        super().__init__()
+        self.std = std
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.training and self.std > 0:
+            return x + torch.randn_like(x) * self.std
+        return x
+
+
 class EmbeddingEncoder(nn.Module):
     """
     Per-section embedding encoder.
-    Reduces 3072-dim embedding to compact representation.
-    Uses LayerNorm + Dropout for regularization.
+
+    hidden_dim > 0 → two-layer MLP (original behavior, good for small datasets).
+    hidden_dim = 0 → single linear projection directly to output_dim.
+                     Halves the dominant parameter count (3072 × hidden vs
+                     3072 × output), which drastically reduces overfitting for
+                     larger datasets where the pretrained embeddings are already
+                     rich enough.
+
+    noise_std > 0 → Gaussian noise injected at input (training only).
     """
 
     def __init__(
@@ -34,18 +61,38 @@ class EmbeddingEncoder(nn.Module):
         hidden_dim: int = NN_CONFIG["embedding_hidden_dim"],
         output_dim: int = NN_CONFIG["embedding_output_dim"],
         dropout: float = NN_CONFIG["dropout_embedding"],
+        noise_std: float = 0.0,
     ):
         super().__init__()
-        self.encoder = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, output_dim),
-            nn.LayerNorm(output_dim),
-            nn.GELU(),
-            nn.Dropout(dropout * 0.7),
-        )
+        layers = []
+
+        # Optional input noise (training only)
+        if noise_std > 0:
+            layers.append(GaussianNoise(noise_std))
+
+        if hidden_dim > 0:
+            # Two-layer MLP: input → hidden → output
+            layers.extend([
+                nn.Linear(input_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, output_dim),
+                nn.LayerNorm(output_dim),
+                nn.GELU(),
+                nn.Dropout(dropout * 0.7),
+            ])
+        else:
+            # Single-layer direct projection: input → output
+            # ~50 % fewer parameters than the two-layer version at 256 hidden.
+            layers.extend([
+                nn.Linear(input_dim, output_dim),
+                nn.LayerNorm(output_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+            ])
+
+        self.encoder = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.encoder(x)
@@ -101,12 +148,14 @@ class LitigationClassifier(nn.Module):
         dropout_fusion = config["dropout_fusion"]
 
         # Per-section embedding encoders
+        _noise_std = config.get("embedding_noise_std", 0.0)
         self.embedding_encoders = nn.ModuleList([
             EmbeddingEncoder(
                 input_dim=EMBEDDING_DIM,
                 hidden_dim=config["embedding_hidden_dim"],
                 output_dim=emb_output_dim,
                 dropout=config["dropout_embedding"],
+                noise_std=_noise_std,
             )
             for _ in range(n_sections)
         ])

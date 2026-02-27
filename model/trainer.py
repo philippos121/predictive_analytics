@@ -264,13 +264,29 @@ class LitigationTrainer:
             weight_decay=tier_config["weight_decay"],
         )
 
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer,
-            mode="min",
-            factor=effective_config["lr_scheduler_factor"],
-            patience=effective_config["lr_scheduler_patience"],
-            verbose=False,
-        )
+        # Medium / Large → CosineAnnealingLR for better loss-landscape exploration.
+        # Small → ReduceLROnPlateau (more conservative, reacts to val loss).
+        use_cosine = config_tier in ("mittel", "groß")
+        if use_cosine:
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=effective_config["epochs"],
+                eta_min=1e-7,
+            )
+        else:
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode="min",
+                factor=effective_config["lr_scheduler_factor"],
+                patience=effective_config["lr_scheduler_patience"],
+                verbose=False,
+            )
+
+        # Large tier: Stochastic Weight Averaging over the last 20 % of epochs.
+        # SWA averages model snapshots to find a flatter, better-generalizing minimum.
+        use_swa = config_tier == "groß"
+        swa_start = max(1, int(effective_config["epochs"] * 0.80))
+        swa_snapshots: list[dict] = []   # state_dicts collected after swa_start
 
         early_stopping = EarlyStopping(
             patience=effective_config["early_stopping_patience"]
@@ -296,9 +312,8 @@ class LitigationTrainer:
                 loss = criterion(logits, label_batch)
                 loss.backward()
 
-                # Gradient clipping
                 nn.utils.clip_grad_norm_(
-                    model.parameters(), self.config["gradient_clip"]
+                    model.parameters(), effective_config["gradient_clip"]
                 )
 
                 optimizer.step()
@@ -316,7 +331,16 @@ class LitigationTrainer:
 
             # LR schedule
             monitor_loss = val_loss if val_loader else avg_train_loss
-            scheduler.step(monitor_loss)
+            if use_cosine:
+                scheduler.step()
+            else:
+                scheduler.step(monitor_loss)
+
+            # SWA snapshot collection
+            if use_swa and epoch >= swa_start:
+                swa_snapshots.append(
+                    {k: v.clone().cpu() for k, v in model.state_dict().items()}
+                )
 
             # Track history
             self.history["train_loss"].append(avg_train_loss)
@@ -338,7 +362,7 @@ class LitigationTrainer:
                 self._log(
                     phase="training",
                     epoch=epoch,
-                    total_epochs=self.config["epochs"],
+                    total_epochs=effective_config["epochs"],
                     train_loss=avg_train_loss,
                     val_loss=val_loss,
                     train_acc=train_acc,
@@ -347,14 +371,37 @@ class LitigationTrainer:
                     lr=optimizer.param_groups[0]["lr"],
                 )
 
-            # Early stopping
-            if early_stopping(monitor_loss):
-                self._log(
-                    phase="early_stop",
-                    epoch=epoch,
-                    message=f"Early stopping at epoch {epoch}",
-                )
-                break
+            # Early stopping (only outside the SWA accumulation window)
+            if not (use_swa and epoch >= swa_start):
+                if early_stopping(monitor_loss):
+                    self._log(
+                        phase="early_stop",
+                        epoch=epoch,
+                        message=f"Early stopping at epoch {epoch}",
+                    )
+                    break
+
+        # ── SWA: average snapshots and re-evaluate ────────────────────────────────
+        if use_swa and swa_snapshots:
+            avg_state: dict = {}
+            for key in swa_snapshots[0]:
+                avg_state[key] = torch.stack(
+                    [s[key].float() for s in swa_snapshots]
+                ).mean(0).to(self.device)
+            model.load_state_dict(avg_state)
+
+            swa_val_loss, swa_val_acc = self._evaluate(model, val_loader, criterion)
+            self._log(
+                phase="swa_done",
+                n_snapshots=len(swa_snapshots),
+                swa_val_acc=swa_val_acc,
+                prev_best_val_acc=best_val_acc,
+            )
+            if swa_val_acc >= best_val_acc:
+                best_val_acc = swa_val_acc
+                best_state_dict = {k: v.clone() for k, v in model.state_dict().items()}
+                self.history["best_val_acc"] = best_val_acc
+                self.history["best_epoch"] = epoch
 
         # ── Finalize ─────────────────────────────────────────────────────────────
         if best_state_dict is not None:

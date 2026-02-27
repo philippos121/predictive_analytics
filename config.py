@@ -170,9 +170,10 @@ NN_CONFIG = {                        # Small / backward-compatible default
     "num_classes": 3,
 }
 
-NN_CONFIG_MEDIUM = {                 # Medium: deeper fusion, moderate dropout
-    "embedding_hidden_dim": 256,
+NN_CONFIG_MEDIUM = {                 # Medium: reduced hidden, deeper fusion, moderate dropout
+    "embedding_hidden_dim": 128,     # Reduced from 256: 3072×128 vs 3072×256 → 50 % fewer params
     "embedding_output_dim": 128,
+    "embedding_noise_std": 0.01,     # Light Gaussian noise on embeddings
     "structured_hidden_dim": 128,
     "fusion_dims": [256, 128],
     "dropout_embedding": 0.40,
@@ -180,9 +181,10 @@ NN_CONFIG_MEDIUM = {                 # Medium: deeper fusion, moderate dropout
     "num_classes": 3,
 }
 
-NN_CONFIG_LARGE = {                  # Large: deep fusion, heavy dropout/L2
-    "embedding_hidden_dim": 256,
-    "embedding_output_dim": 128,
+NN_CONFIG_LARGE = {                  # Large: single-layer encoder, heavy dropout/L2 + noise
+    "embedding_hidden_dim": 0,       # Single linear projection 3072→128 (no hidden layer)
+    "embedding_output_dim": 128,     # 3 × (3072×128) ≈ 1.18 M vs 2.4 M → −50 %
+    "embedding_noise_std": 0.02,     # Gaussian noise (strong regularization)
     "structured_hidden_dim": 128,
     "fusion_dims": [512, 256],
     "dropout_embedding": 0.50,

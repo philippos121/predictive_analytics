@@ -595,6 +595,15 @@ with tab_train:
                     f'[WARN] {kwargs.get("message", "Early stopping")}'
                 )
 
+            elif phase == "swa_done":
+                prev = kwargs.get("prev_best_val_acc", 0)
+                swa = kwargs.get("swa_val_acc", 0)
+                tag = " ✓ besser als Einzelmodell" if swa >= prev else ""
+                st.session_state.training_log.append(
+                    f'[OK]  SWA ({kwargs["n_snapshots"]} Snapshots): '
+                    f'Val-Acc={swa:.1%}{tag}'
+                )
+
             elif phase == "done":
                 if kwargs.get("model_type") == "knn":
                     st.session_state.training_log.append(
@@ -1019,6 +1028,67 @@ with tab_predict:
                     file_name="vorhersage_ergebnis.json",
                     mime="application/json",
                 )
+
+        # ── Juristische KI-Schnellanalyse (volle Breite) ─────────────────────────
+        if st.session_state.prediction_result:
+            st.divider()
+            st.markdown("**Juristische KI-Einschätzung**")
+            st.caption(
+                f"Nutzt {LEGAL_ANALYSIS_MODEL} mit Web-Suche auf ris.bka.gv.at / ogh.gv.at. "
+                "Vollständige Analyse mit Quellen und Judikatur → Tab **Juristische Analyse**."
+            )
+
+            if not st.session_state.openai_api_key:
+                st.info("OpenAI API-Key in der Sidebar eintragen, um die KI-Rechtseinschätzung zu aktivieren.")
+            else:
+                jur_quick = st.session_state.juristic_analysis
+                if not jur_quick or jur_quick.get("error"):
+                    if st.button(
+                        "KI-Rechtslageeinschätzung berechnen",
+                        key="jur_quick_btn",
+                        type="secondary",
+                    ):
+                        _analysis_input = {
+                            **(st.session_state.prediction_case_dict or {}),
+                            "sections": st.session_state.prediction_sections or {},
+                        }
+                        with st.spinner(f"Analysiert österreichisches Recht ({LEGAL_ANALYSIS_MODEL})…"):
+                            try:
+                                _analyzer = LegalAnalyzer(api_key=st.session_state.openai_api_key)
+                                _jur = _analyzer.analyze(_analysis_input)
+                                st.session_state.juristic_analysis = _jur
+                                st.rerun()
+                            except Exception as _e:
+                                st.error(f"KI-Analysefehler: {_e}")
+                else:
+                    # Show inline combined result
+                    _jur_prob = jur_quick.get("erfolgseinschaetzung", 0.5)
+                    _ml_prob  = st.session_state.prediction_result["p_win"]
+                    _combined = 0.5 * _ml_prob + 0.5 * _jur_prob
+
+                    _c1, _c2, _c3, _c4 = st.columns(4)
+                    _c1.metric("ML-Modell P(Obsiegen)", f"{_ml_prob:.1%}")
+                    _c2.metric("KI-Recht P(Obsiegen)", f"{_jur_prob:.1%}",
+                               help="Juristische Einschätzung durch " + LEGAL_ANALYSIS_MODEL)
+                    _c3.metric(
+                        "Kombiniert (50/50)",
+                        f"{_combined:.1%}",
+                        delta=f"{(_combined - _ml_prob):+.1%} vs. ML",
+                    )
+                    _konfidenz = jur_quick.get("konfidenz", "?")
+                    _c4.metric("Jurist. Konfidenz", _konfidenz)
+
+                    if jur_quick.get("einschaetzung_begruendung"):
+                        with st.expander("KI-Begründung"):
+                            st.write(jur_quick["einschaetzung_begruendung"])
+
+                    st.caption(
+                        "Gewichtung ML / Juristik im Tab **Erwartungswert** frei einstellbar."
+                    )
+
+                    if st.button("Analyse zurücksetzen", key="jur_quick_reset"):
+                        st.session_state.juristic_analysis = None
+                        st.rerun()
 
 
 # ════════════════════════════════════════════════════════════════════════════════

@@ -303,7 +303,7 @@ with st.sidebar:
     if txt_folder:
         folder = Path(txt_folder)
         if folder.exists() and folder.is_dir():
-            txt_files = [f for f in folder.iterdir() if f.suffix.lower() == ".txt"]
+            txt_files = [f for f in folder.iterdir() if f.suffix == ".txt"]
             processed = dm.get_processed_filenames()
             pending = [f for f in txt_files if f.name not in processed]
             st.success(f"{len(txt_files)} TXT-Dateien gefunden")
@@ -357,7 +357,7 @@ with tab_extract:
     with col2:
         if st.session_state.txt_folder and Path(st.session_state.txt_folder).exists():
             folder = Path(st.session_state.txt_folder)
-            txt_files = [f for f in folder.iterdir() if f.suffix.lower() == ".txt"]
+            txt_files = [f for f in folder.iterdir() if f.suffix == ".txt"]
             processed_fnames = dm.get_processed_filenames()
             pending_files = [f for f in txt_files if f.name not in processed_fnames]
 
@@ -371,7 +371,7 @@ with tab_extract:
         folder = Path(st.session_state.txt_folder)
         if folder.exists():
             txt_files = sorted(
-                f for f in folder.iterdir() if f.suffix.lower() == ".txt"
+                f for f in folder.iterdir() if f.suffix == ".txt"
             )
             processed_fnames = dm.get_processed_filenames()
             pending_files = [f for f in txt_files if f.name not in processed_fnames]

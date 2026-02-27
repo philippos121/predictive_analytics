@@ -31,10 +31,8 @@ KNN_FILE = MODELS_DIR / "litigation_knn.pkl"
 KNN_THRESHOLD = 50
 
 # ─── OpenAI Configuration ───────────────────────────────────────────────────────
-# gpt-4.1-mini: released April 2025, cost-efficient with 1M context window.
-# Pricing: $0.40/1M input tokens, $1.60/1M output tokens.
-# Update OPENAI_EXTRACTION_MODEL when newer models are released.
-OPENAI_EXTRACTION_MODEL = "gpt-4.1-mini"
+# gpt-5-mini: does not support temperature parameter.
+OPENAI_EXTRACTION_MODEL = "gpt-5-mini"
 OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
 EMBEDDING_DIM = 3072  # Dimension of text-embedding-3-large
 

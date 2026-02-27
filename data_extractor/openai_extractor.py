@@ -212,12 +212,11 @@ class OpenAIExtractor:
         wait=wait_exponential(multiplier=1, min=2, max=30),
         stop=stop_after_attempt(5),
     )
-    def _chat_completion(self, messages: list[dict], temperature: float = 0.0) -> str:
-        """Call GPT-4o-mini with retry logic."""
+    def _chat_completion(self, messages: list[dict]) -> str:
+        """Call gpt-5-mini with retry logic (no temperature parameter)."""
         response = self.client.chat.completions.create(
             model=OPENAI_EXTRACTION_MODEL,
             messages=messages,
-            temperature=temperature,
             response_format={"type": "json_object"},
         )
         return response.choices[0].message.content

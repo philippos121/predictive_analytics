@@ -333,10 +333,11 @@ with st.sidebar:
 
     st.divider()
     # Pick tier-appropriate defaults based on current dataset size
+    _all_cases = dm.load_dataset()
     _n_labeled = sum(
-        1 for c in dm.get_cases()
+        1 for c in _all_cases
         if c.get("structured", {}).get("outcome") is not None
-    ) if dm.get_cases() else 0
+    ) if _all_cases else 0
     if _n_labeled >= NN_MEDIUM_THRESHOLD:
         _default_cfg = TRAINING_CONFIG_LARGE
         _tier_hint = f"Tier: Groß (≥{NN_MEDIUM_THRESHOLD} Fälle)"

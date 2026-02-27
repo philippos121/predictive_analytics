@@ -61,6 +61,30 @@ class EarlyStopping:
         return self.should_stop
 
 
+def _mixup_batch(
+    embeddings: list,
+    labels: torch.Tensor,
+    alpha: float,
+) -> tuple:
+    """
+    Mixup augmentation for embedding inputs.
+
+    Interpolates pairs of training samples (both embeddings and labels) using
+    a Beta(alpha, alpha) mixing coefficient.  Prevents the model from memorising
+    individual training points and smooths the decision boundaries.
+
+    Returns:
+        mixed_embeddings: list of (batch, dim) tensors
+        labels_a, labels_b: original label tensors for the two mixed samples
+        lam: scalar mixing coefficient (dominant sample has weight lam)
+    """
+    lam = float(np.random.beta(alpha, alpha))
+    batch_size = labels.size(0)
+    perm = torch.randperm(batch_size, device=labels.device)
+    mixed = [lam * e + (1.0 - lam) * e[perm] for e in embeddings]
+    return mixed, labels, labels[perm], lam
+
+
 class LitigationTrainer:
     """
     Manages the full training lifecycle of the LitigationClassifier.
@@ -281,10 +305,10 @@ class LitigationTrainer:
                 verbose=False,
             )
 
-        # Large tier: Stochastic Weight Averaging over the last 20 % of epochs.
-        # SWA averages model snapshots to find a flatter, better-generalizing minimum.
+        # Large tier: Stochastic Weight Averaging over the last 40 % of epochs.
+        # Start at 60 % (down from 80 %) so SWA is reachable even with early stopping.
         use_swa = config_tier == "groß"
-        swa_start = max(1, int(effective_config["epochs"] * 0.80))
+        swa_start = max(1, int(effective_config["epochs"] * 0.60))
         swa_snapshots: list[dict] = []   # state_dicts collected after swa_start
 
         early_stopping = EarlyStopping(
@@ -296,6 +320,8 @@ class LitigationTrainer:
         best_state_dict = None
 
         # ── Training Loop ────────────────────────────────────────────────────────
+        _mixup_alpha = float(effective_config.get("mixup_alpha", 0.0))
+
         for epoch in range(1, effective_config["epochs"] + 1):
             # Train
             model.train()
@@ -306,8 +332,24 @@ class LitigationTrainer:
                 label_batch = label_batch.to(self.device)
 
                 optimizer.zero_grad()
-                logits, _ = model(emb_batch)
-                loss = criterion(logits, label_batch)
+
+                if _mixup_alpha > 0 and len(label_batch) > 1:
+                    # Mixup: interpolate pairs of samples to prevent memorisation
+                    mixed_emb, labels_a, labels_b, lam = _mixup_batch(
+                        emb_batch, label_batch, _mixup_alpha
+                    )
+                    logits, _ = model(mixed_emb)
+                    loss = (
+                        lam * criterion(logits, labels_a)
+                        + (1.0 - lam) * criterion(logits, labels_b)
+                    )
+                    # Accuracy tracked against the dominant (higher-weight) label
+                    ref_labels = labels_a if lam >= 0.5 else labels_b
+                else:
+                    logits, _ = model(emb_batch)
+                    loss = criterion(logits, label_batch)
+                    ref_labels = label_batch
+
                 loss.backward()
 
                 nn.utils.clip_grad_norm_(
@@ -318,7 +360,7 @@ class LitigationTrainer:
 
                 train_loss += loss.item() * len(label_batch)
                 preds = logits.argmax(dim=-1)
-                train_correct += (preds == label_batch).sum().item()
+                train_correct += (preds == ref_labels).sum().item()
                 train_total += len(label_batch)
 
             avg_train_loss = train_loss / train_total

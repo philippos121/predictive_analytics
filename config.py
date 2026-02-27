@@ -184,13 +184,13 @@ NN_CONFIG_MEDIUM = {                 # Medium: two-layer encoder + attention, mo
 }
 
 NN_CONFIG_LARGE = {                  # Large: single-layer encoder + attention + noise, heavy dropout
-    "embedding_hidden_dim": 0,       # Single projection 3072 → 128; −50 % vs two-layer
-    "embedding_output_dim": 128,
+    "embedding_hidden_dim": 0,       # Single projection 3072 → 64; −75 % vs two-layer-128
+    "embedding_output_dim": 64,      # Reduced from 128 → cuts encoder params ~2×, fights overfit
     "embedding_noise_std": 0.02,     # Gaussian noise (strong regularization)
     "use_section_attention": True,   # Attention over the 3 text sections
-    "fusion_dims": [256, 128],       # fusion_input = (3+1)×128 = 512 → 256 → 128 → 3
+    "fusion_dims": [128, 64],        # fusion_input = (3+1)×64 = 256 → 128 → 64 → 3
     "dropout_embedding": 0.50,
-    "dropout_fusion": 0.45,
+    "dropout_fusion": 0.50,          # Increased from 0.45 for stronger fusion regularization
     "num_classes": 3,
 }
 
@@ -232,14 +232,15 @@ TRAINING_CONFIG_LARGE = {
     "epochs": 400,
     "batch_size": 32,
     "learning_rate": 3e-4,
-    "weight_decay": 1e-3,
+    "weight_decay": 2e-3,            # Increased from 1e-3: stronger L2 against overfitting
     "lr_scheduler_patience": 25,
     "lr_scheduler_factor": 0.5,
     "early_stopping_patience": 60,
-    "val_split": 0.2,
+    "val_split": 0.25,               # Increased from 0.2: larger val set for reliable monitoring
     "random_seed": 42,
     "gradient_clip": 1.0,
     "label_smoothing": 0.1,          # Prevents overconfident predictions
+    "mixup_alpha": 0.2,              # Mixup augmentation: interpolates embedding pairs
 }
 
 # ─── UI Configuration ───────────────────────────────────────────────────────────

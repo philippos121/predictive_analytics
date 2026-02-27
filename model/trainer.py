@@ -411,15 +411,16 @@ class LitigationTrainer:
                     lr=optimizer.param_groups[0]["lr"],
                 )
 
-            # Early stopping (only outside the SWA accumulation window)
-            if not (use_swa and epoch >= swa_start):
-                if early_stopping(monitor_loss):
-                    self._log(
-                        phase="early_stop",
-                        epoch=epoch,
-                        message=f"Early stopping at epoch {epoch}",
-                    )
-                    break
+            # Early stopping: disabled for large tier — CosineAnnealingLR naturally
+            # oscillates loss across the full cycle, causing premature stops long before
+            # the SWA window. Best model is always tracked; SWA handles final averaging.
+            if not use_swa and early_stopping(monitor_loss):
+                self._log(
+                    phase="early_stop",
+                    epoch=epoch,
+                    message=f"Early stopping at epoch {epoch}",
+                )
+                break
 
         # ── SWA: average snapshots and re-evaluate ────────────────────────────────
         if use_swa and swa_snapshots:

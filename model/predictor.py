@@ -126,6 +126,7 @@ class LitigationPredictor:
         w_jurist: float = 0.5,
         streitwert_eur: Optional[float] = None,
         cost_estimate_eur: Optional[float] = None,
+        ratg_result: Optional[dict] = None,
     ) -> dict:
         """
         Compute the combined expected value of a case.
@@ -136,7 +137,9 @@ class LitigationPredictor:
             w_ml: Weight for ML model prediction
             w_jurist: Weight for juristic estimate
             streitwert_eur: Case value in EUR (for monetary EV)
-            cost_estimate_eur: Estimated litigation costs in EUR
+            cost_estimate_eur: Manual cost estimate in EUR (used if no ratg_result)
+            ratg_result: Output from ratg_calculator.calculate_ratg_costs()
+                         (if provided, overrides cost_estimate_eur)
 
         Returns:
             Expected value analysis dict
@@ -180,23 +183,91 @@ class LitigationPredictor:
             "recommendation": self._get_recommendation(ev_probability),
         }
 
-        # Monetary expected value
+        # ── Monetary Expected Value ───────────────────────────────────────────
         if streitwert_eur is not None and streitwert_eur > 0:
+            # Brutto-EV: Erfolgsszenario-gewichteter Zuspruch
             ev_gross = (
                 p_full_success * streitwert_eur
                 + p_partial_success * streitwert_eur * 0.5
-                - p_failure * 0.0
             )
             result["streitwert_eur"] = streitwert_eur
             result["ev_gross_eur"] = ev_gross
 
-            if cost_estimate_eur is not None:
-                ev_net = ev_gross - cost_estimate_eur
-                result["cost_estimate_eur"] = cost_estimate_eur
+            # Kosten-EV nach § 41 ZPO:
+            #   Sieg:       eigene Kosten vollständig erstattet → 0 Nettobelastung
+            #   Teilsieg:   anteilige Kostenbelastung (50 %)
+            #   Niederlage: eigene + gegnerische Kosten
+            if ratg_result is not None:
+                from model.ratg_calculator import compute_cost_risk
+                cost_risk = compute_cost_risk(
+                    ratg_result,
+                    p_win=p_full_success,
+                    p_partial=p_partial_success,
+                    p_loss=p_failure,
+                )
+                effective_cost = cost_risk["erwartete_kostenbelastung_eur"]
+                result["ratg_result"] = ratg_result
+                result["cost_risk_detail"] = cost_risk
+                result["cost_estimate_eur"] = effective_cost
+                result["cost_source"] = "RATG"
+            elif cost_estimate_eur is not None:
+                effective_cost = cost_estimate_eur
+                result["cost_estimate_eur"] = effective_cost
+                result["cost_source"] = "Manuell"
+            else:
+                effective_cost = None
+
+            if effective_cost is not None:
+                ev_net = ev_gross - effective_cost
                 result["ev_net_eur"] = ev_net
                 result["proceed_recommendation"] = ev_net > 0
 
         return result
+
+    def predict_with_updated_vorbringen(
+        self,
+        original_case_dict: dict,
+        new_klaeger_text: Optional[str] = None,
+        new_beklagter_text: Optional[str] = None,
+        new_beweise_text: Optional[str] = None,
+        api_key: Optional[str] = None,
+    ) -> dict:
+        """
+        Vorhersage nach neuem Vorbringen / Gegenvorbringen.
+
+        Re-embedded die aktualisierten Texte und berechnet eine neue Vorhersage.
+        Ermöglicht die Einschätzung, wie sich neues Prozessvorbringen auf die
+        Erfolgsaussichten auswirkt.
+
+        Args:
+            original_case_dict: Ursprüngliche Falldaten (strukturiert)
+            new_klaeger_text:   Aktualisiertes / ergänztes Kläger-Vorbringen
+            new_beklagter_text: Aktualisiertes Beklagten-Vorbringen / Gegenvorbringen
+            new_beweise_text:   Aktualisierte Beweise
+            api_key:            OpenAI API-Key für Embedding
+
+        Returns:
+            Neues predict()-Ergebnis mit aktualisierten Embeddings
+        """
+        new_sections = {}
+        if new_klaeger_text:
+            new_sections["klaegervorbringen"] = new_klaeger_text
+        if new_beklagter_text:
+            new_sections["beklagtenvorbringen"] = new_beklagter_text
+        if new_beweise_text:
+            new_sections["aufgenommene_beweise"] = new_beweise_text
+
+        # Re-embed nur die geänderten Sektionen
+        new_embeddings = {}
+        if new_sections and api_key:
+            try:
+                from data_extractor.openai_extractor import OpenAIExtractor
+                extractor = OpenAIExtractor(api_key)
+                new_embeddings = extractor.generate_embeddings(new_sections)
+            except Exception as e:
+                raise RuntimeError(f"Embedding-Fehler bei neuem Vorbringen: {e}") from e
+
+        return self.predict(original_case_dict, new_embeddings)
 
     def _get_recommendation(self, ev_probability: float) -> str:
         if ev_probability >= 0.70:

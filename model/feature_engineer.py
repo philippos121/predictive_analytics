@@ -45,7 +45,6 @@ class FeatureEngineer:
     - legal_basis_count             [1]
     - court_level                   [4] (BG/LG/OLG/OGH one-hot, bei OGH-Datenbasis = Erstgericht)
     - sachverstaendiger             [1]
-    - has_aufrechnung               [1] (already in defense, redundant but useful)
     ─────────────────────────────────────────────────────
     Total: 1 + (len(CLAIM_TYPES)+1) + len(DEFENSE_TYPES) + 1 + 1 + 1 + 4 + 1 = varies
     """

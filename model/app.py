@@ -33,6 +33,7 @@ from config import (
     EMBEDDING_DIM,
     EMBEDDING_SECTION_LABELS,
     KNN_THRESHOLD,
+    LEGAL_ANALYSIS_MODEL,
     MODEL_CHECKPOINT,
     OUTCOME_COLORS,
     OUTCOME_ICONS,
@@ -42,7 +43,9 @@ from config import (
 )
 from data_extractor.data_manager import DataManager
 from model.feature_engineer import FeatureEngineer
+from model.legal_analyzer import LegalAnalyzer
 from model.predictor import LitigationPredictor
+from model.ratg_calculator import calculate_ratg_costs
 from model.trainer import LitigationTrainer
 
 # ─── Page Config ─────────────────────────────────────────────────────────────────
@@ -264,7 +267,12 @@ def init_session():
         "training_history": {},
         "openai_api_key": os.environ.get("OPENAI_API_KEY", ""),
         "prediction_result": None,
+        "prediction_case_dict": None,   # Falldaten der letzten Vorhersage
+        "prediction_sections": {},      # Textsektionen (für Re-Embedding)
+        "juristic_analysis": None,      # Ergebnis der juristischen Analyse
+        "ratg_result": None,            # RATG-Kostenberechnung
         "ev_result": None,
+        "updated_prediction": None,     # Vorhersage nach Vorbringen-Update
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -348,10 +356,11 @@ with st.sidebar:
 
 # ─── Main Tabs ────────────────────────────────────────────────────────────────────
 
-tab_train, tab_eval, tab_predict, tab_ev = st.tabs([
+tab_train, tab_eval, tab_predict, tab_jur, tab_ev = st.tabs([
     "Training",
     "Evaluation",
     "Vorhersage",
+    "Juristische Analyse",
     "Erwartungswert",
 ])
 
@@ -885,6 +894,13 @@ with tab_predict:
             with st.spinner("Berechne Vorhersage..."):
                 result = st.session_state.predictor.predict(case_dict, embeddings)
                 st.session_state.prediction_result = result
+                st.session_state.prediction_case_dict = case_dict
+                st.session_state.prediction_sections = sections
+                # Reset downstream results when new prediction is made
+                st.session_state.juristic_analysis = None
+                st.session_state.ratg_result = None
+                st.session_state.ev_result = None
+                st.session_state.updated_prediction = None
 
         # ── Display Results ──────────────────────────────────────────────────────
         with col_input2:
@@ -965,162 +981,405 @@ with tab_predict:
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# TAB 4: EXPECTED VALUE
+# TAB 4: JURISTISCHE ANALYSE
+# ════════════════════════════════════════════════════════════════════════════════
+
+with tab_jur:
+    st.markdown('<div class="section-title">Juristische Analyse (KI + Rechtsweb-Suche)</div>', unsafe_allow_html=True)
+
+    st.caption(
+        f"Nutzt **{LEGAL_ANALYSIS_MODEL}** mit Web-Suche, bevorzugt auf "
+        "[ris.bka.gv.at](https://ris.bka.gv.at) und [ogh.gv.at](https://ogh.gv.at). "
+        "Liefert eine österreichische Rechtslageeinschätzung als Komplement zur ML-Vorhersage."
+    )
+
+    if st.session_state.prediction_result is None:
+        st.info("Bitte zuerst eine Vorhersage im Tab **'Vorhersage'** berechnen.")
+    elif not st.session_state.openai_api_key:
+        st.warning("OpenAI API-Key erforderlich (in der Sidebar eintragen).")
+    else:
+        ml_result = st.session_state.prediction_result
+        case_dict_raw = st.session_state.prediction_case_dict or {}
+        sections = st.session_state.prediction_sections or {}
+
+        # Zeige ML-Kurzzusammenfassung
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.metric("ML: P(Obsiegen)", f"{ml_result['p_win']:.1%}")
+        with c2:
+            st.metric("ML: P(Teilweise)", f"{ml_result['p_partial']:.1%}")
+        with c3:
+            st.metric("ML: P(Unterliegen)", f"{ml_result['p_loss']:.1%}")
+
+        st.markdown("")
+
+        # ── Analyse-Button ────────────────────────────────────────────────────
+        col_jur_btn, col_jur_info = st.columns([1, 2])
+        with col_jur_btn:
+            jur_btn = st.button(
+                "Juristische Analyse starten",
+                type="primary",
+                use_container_width=True,
+                help="Startet die KI-gestützte Rechtsprüfung mit Web-Suche (~20–60 Sek.)",
+            )
+
+        if jur_btn:
+            # Kombiniere case_dict und sections für die Analyse
+            analysis_input = {}
+            if isinstance(case_dict_raw.get("structured"), dict):
+                analysis_input.update(case_dict_raw["structured"])
+            elif isinstance(case_dict_raw, dict):
+                analysis_input.update(case_dict_raw)
+            analysis_input.update(sections)
+
+            with st.spinner(
+                f"Juristische Analyse läuft ({LEGAL_ANALYSIS_MODEL}, Web-Suche)…"
+            ):
+                try:
+                    analyzer = LegalAnalyzer(api_key=st.session_state.openai_api_key)
+                    jur_result = analyzer.analyze(analysis_input)
+                    st.session_state.juristic_analysis = jur_result
+                except Exception as e:
+                    st.error(f"Analyse fehlgeschlagen: {e}")
+                    jur_result = None
+
+        # ── Ergebnis anzeigen ─────────────────────────────────────────────────
+        jur = st.session_state.juristic_analysis
+        if jur:
+            if jur.get("error"):
+                st.error(f"Fehler bei der Analyse: {jur['error']}")
+
+            # Erfolgseinschätzung + Konfidenz
+            p_jur = jur["erfolgseinschaetzung"]
+            color_jur = "#2c6e49" if p_jur >= 0.55 else "#7d5a00" if p_jur >= 0.4 else "#8b1a1a"
+            konf = jur.get("konfidenz", "mittel")
+
+            col_j1, col_j2, col_j3 = st.columns(3)
+            with col_j1:
+                st.markdown(
+                    f'<div class="ev-card">'
+                    f'<div class="ev-value" style="color:{color_jur}">{p_jur:.0%}</div>'
+                    f'<div class="ev-label">Juristische Erfolgseinschätzung</div>'
+                    f'<div class="ev-sublabel">Konfidenz: <strong>{konf}</strong></div>'
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            with col_j2:
+                st.markdown(
+                    f'<div class="ev-card">'
+                    f'<div class="ev-value" style="color:#1c3a5e">{ml_result["p_win"]:.0%}</div>'
+                    f'<div class="ev-label">ML-Erfolgswahrscheinlichkeit</div>'
+                    f'<div class="ev-sublabel">Statistisches Modell</div>'
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            with col_j3:
+                p_kombi = (p_jur + ml_result["p_win"]) / 2
+                color_k = "#2c6e49" if p_kombi >= 0.55 else "#7d5a00" if p_kombi >= 0.4 else "#8b1a1a"
+                st.markdown(
+                    f'<div class="ev-card">'
+                    f'<div class="ev-value" style="color:{color_k}">{p_kombi:.0%}</div>'
+                    f'<div class="ev-label">Schnellkombination (Ø, gleiche Gewichtung)</div>'
+                    f'<div class="ev-sublabel">Für genauere Gewichtung → Tab Erwartungswert</div>'
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+            if jur.get("einschaetzung_begruendung"):
+                st.info(f"**Begründung:** {jur['einschaetzung_begruendung']}")
+
+            st.markdown("---")
+
+            # Stärken / Schwächen
+            col_sw1, col_sw2 = st.columns(2)
+            with col_sw1:
+                st.markdown("**Stärken (Kläger)**")
+                for s in jur.get("staerken_klaeger", []):
+                    st.markdown(f"- {s}")
+            with col_sw2:
+                st.markdown("**Schwächen / Risiken (Kläger)**")
+                for s in jur.get("schwaechen_klaeger", []):
+                    st.markdown(f"- {s}")
+
+            # Normen + Judikatur
+            col_n1, col_n2 = st.columns(2)
+            with col_n1:
+                norms = jur.get("relevante_normen", [])
+                if norms:
+                    st.markdown("**Relevante Rechtsnormen**")
+                    for n in norms:
+                        st.markdown(f"- `{n}`")
+            with col_n2:
+                jud = jur.get("relevante_judikatur", [])
+                if jud:
+                    st.markdown("**Einschlägige OGH-Judikatur**")
+                    for j in jud:
+                        st.markdown(f"- {j}")
+
+            # Volltext-Analyse
+            if jur.get("analyse"):
+                with st.expander("Vollständige juristische Analyse"):
+                    st.markdown(jur["analyse"])
+
+            # Quellen
+            sources = jur.get("sources", [])
+            if sources:
+                with st.expander(f"Web-Quellen ({len(sources)})"):
+                    for s in sources:
+                        url = s.get("url", "")
+                        title = s.get("title", url)
+                        st.markdown(f"- [{title}]({url})")
+
+            # Export
+            st.download_button(
+                "Juristische Analyse als JSON exportieren",
+                data=json.dumps(jur, ensure_ascii=False, indent=2).encode(),
+                file_name="juristische_analyse.json",
+                mime="application/json",
+            )
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# TAB 5: EXPECTED VALUE
 # ════════════════════════════════════════════════════════════════════════════════
 
 with tab_ev:
     st.markdown('<div class="section-title">Erwartungswert-Kalkulation</div>', unsafe_allow_html=True)
 
-    st.markdown("""
-    Kombiniert die ML-Modell-Vorhersage mit der juristischen Erfolgseinschätzung
-    zur Berechnung des Gesamterwartungswerts:
-
-    > **E[outcome] = w_ML × P_ML(Obsiegen) + w_Jur × P_Juristisch(Obsiegen)**
-    """)
+    st.caption(
+        "Kombiniert ML-Vorhersage + juristische Einschätzung zur Berechnung des monetären "
+        "Erwartungswerts inkl. RATG-Anwaltskosten und GGG-Gerichtsgebühren."
+    )
 
     if st.session_state.prediction_result is None:
-        st.info("Bitte zuerst eine Vorhersage im Tab 'Vorhersage' berechnen.")
+        st.info("Bitte zuerst eine Vorhersage im Tab **'Vorhersage'** berechnen.")
     else:
         ml_result = st.session_state.prediction_result
 
-        col_ev1, col_ev2 = st.columns([2, 1])
+        # ── Schritt 1: Parameter ─────────────────────────────────────────────────
+        st.markdown("#### 1. Parameter")
+        ev_c1, ev_c2, ev_c3 = st.columns(3)
 
-        with col_ev1:
-            st.markdown("**Parameter**")
-
-            ev_c1, ev_c2 = st.columns(2)
-
-            with ev_c1:
-                juristic_estimate = st.slider(
-                    "Juristische Erfolgseinschätzung",
-                    0.0, 1.0, 0.6, 0.05,
-                    format="%.0f%%",
-                    help="Einschätzung des juristischen KI-Assistenten (0 = keine Chance, 1 = sicher)",
+        with ev_c1:
+            # Juristische Einschätzung: aus Tab 4 oder manuell
+            jur = st.session_state.juristic_analysis
+            default_jur = jur["erfolgseinschaetzung"] if jur and not jur.get("error") else 0.6
+            juristic_estimate = st.slider(
+                "Juristische Erfolgseinschätzung",
+                0.0, 1.0, float(default_jur), 0.05,
+                format="%.0f%%",
+                help="Aus Tab 'Juristische Analyse' übernommen oder manuell. 0 = keine Chance, 1 = sicher.",
+            )
+            if jur and not jur.get("error"):
+                st.caption(
+                    f"KI-Analyse: {jur['erfolgseinschaetzung']:.0%} "
+                    f"(Konfidenz: {jur.get('konfidenz','?')})"
                 )
-                w_ml = st.slider(
-                    "Gewichtung ML-Modell",
-                    0.0, 1.0, 0.5, 0.1,
-                    help="Höher = mehr Vertrauen in das ML-Modell",
-                )
-                w_jurist = 1.0 - w_ml
+            w_ml = st.slider(
+                "Gewichtung ML-Modell",
+                0.0, 1.0, 0.5, 0.1,
+                help="0.5 = gleichgewichtig; höher = mehr Vertrauen in ML-Modell.",
+            )
+            w_jurist = 1.0 - w_ml
 
-            with ev_c2:
-                streitwert = st.number_input(
-                    "Streitwert (EUR)", 0.0, 10_000_000.0, 10000.0, 500.0
-                )
-                cost_estimate = st.number_input(
-                    "Geschätzte Verfahrenskosten (EUR)",
-                    0.0, 500_000.0, 3000.0, 500.0,
-                    help="Anwalts- und Gerichtskosten (beider Parteien falls Verlust)",
-                )
-
-            ev_btn = st.button(
-                "Erwartungswert berechnen",
-                type="primary",
-                use_container_width=True,
+        with ev_c2:
+            streitwert = st.number_input(
+                "Streitwert (EUR)",
+                min_value=0.0, max_value=10_000_000.0,
+                value=float(
+                    (st.session_state.prediction_case_dict or {})
+                    .get("structured", {})
+                    .get("streitwert_eur") or 10_000.0
+                ),
+                step=500.0,
+            )
+            use_ratg = st.checkbox(
+                "RATG + GGG Kosten automatisch berechnen",
+                value=True,
+                help=(
+                    "Berechnet Anwaltskosten nach RATG Anlage 1 + GGG TP 1. "
+                    "Deaktivieren für manuelle Kosteneingabe."
+                ),
             )
 
-        if ev_btn:
+        with ev_c3:
+            if use_ratg:
+                st.markdown("**RATG-Kostenparameter**")
+                n_verh = st.number_input("Anzahl Verhandlungen", 1, 10, 2)
+                h_verh = st.number_input("Ø Stunden pro Verhandlung", 0.5, 8.0, 2.0, 0.5)
+                n_schrift_kl = st.number_input("Vorb. Schriftsätze (Kläger)", 0, 5, 1)
+                n_schrift_bk = st.number_input("Vorb. Schriftsätze (Beklagter)", 0, 5, 1)
+            else:
+                manual_costs = st.number_input(
+                    "Manuelle Kostenabschätzung (EUR)",
+                    0.0, 500_000.0, 3_000.0, 500.0,
+                    help="Anwaltskosten beider Seiten + Gerichtsgebühren (falls Verlust).",
+                )
+
+        ev_btn = st.button("Erwartungswert berechnen", type="primary", use_container_width=True)
+
+        if ev_btn and st.session_state.predictor is not None:
             predictor = st.session_state.predictor
+            ratg_res = None
+
+            if use_ratg and streitwert > 0:
+                try:
+                    ratg_res = calculate_ratg_costs(
+                        streitwert_eur=streitwert,
+                        klage=True,
+                        klagebeantwortung=True,
+                        vorbereitende_schriftsaetze_klaeger=n_schrift_kl,
+                        vorbereitende_schriftsaetze_beklagter=n_schrift_bk,
+                        anzahl_verhandlungen=n_verh,
+                        stunden_pro_verhandlung=h_verh,
+                        include_ust=True,
+                    )
+                    st.session_state.ratg_result = ratg_res
+                except Exception as e:
+                    st.warning(f"RATG-Berechnung fehlgeschlagen: {e}")
+
             ev_result = predictor.compute_expected_value(
                 ml_result=ml_result,
                 juristic_estimate=juristic_estimate,
                 w_ml=w_ml,
                 w_jurist=w_jurist,
                 streitwert_eur=streitwert if streitwert > 0 else None,
-                cost_estimate_eur=cost_estimate if cost_estimate > 0 else None,
+                cost_estimate_eur=None if use_ratg else (manual_costs if not use_ratg else None),
+                ratg_result=ratg_res,
             )
             st.session_state.ev_result = ev_result
 
+        # ── Schritt 2: RATG-Kostenaufstellung ────────────────────────────────────
+        ratg = st.session_state.ratg_result
+        if ratg:
+            st.markdown("---")
+            st.markdown("#### 2. Kostenaufstellung (RATG + GGG)")
+
+            st.caption(ratg["disclaimer"])
+
+            ratg_c1, ratg_c2, ratg_c3 = st.columns(3)
+            with ratg_c1:
+                st.markdown("**Kläger (RATG + USt)**")
+                for key, pos in ratg["klaeger_positionen"].items():
+                    st.markdown(f"- {pos['bezeichnung']}: **EUR {pos['netto']:,.2f}** netto")
+                st.markdown(f"**Summe Kläger: EUR {ratg['klaeger_brutto_eur']:,.2f}** (inkl. 20 % USt)")
+
+            with ratg_c2:
+                st.markdown("**Beklagter (RATG + USt)**")
+                for key, pos in ratg["beklagter_positionen"].items():
+                    st.markdown(f"- {pos['bezeichnung']}: **EUR {pos['netto']:,.2f}** netto")
+                st.markdown(f"**Summe Beklagter: EUR {ratg['beklagter_brutto_eur']:,.2f}** (inkl. 20 % USt)")
+
+            with ratg_c3:
+                st.markdown("**Gerichtsgebühren (GGG)**")
+                ggg_data = ratg.get("ggg", {})
+                st.markdown(
+                    f"- {ggg_data.get('ggg_tp1_bezeichnung','TP 1 GGG')}: "
+                    f"**EUR {ratg['ggg_tp1_eur']:,.2f}**"
+                )
+                st.caption(ggg_data.get("ggg_hinweis_praet_vergleich", ""))
+                st.markdown(
+                    f"**Gesamtbelastung (bei Niederlage):** "
+                    f"EUR {ratg['gesamt_bei_niederlage_eur']:,.2f}"
+                )
+                st.caption(
+                    f"Einheitssatz: {ratg['einheitssatz_pct']} — "
+                    + ratg["klagebeantwortung_es_hinweis"]
+                )
+
+        # ── Schritt 3: Erwartungswert-Ergebnis ───────────────────────────────────
         if st.session_state.ev_result:
             ev = st.session_state.ev_result
 
             st.markdown("---")
-            st.markdown("**Erwartungswert-Ergebnis**")
+            st.markdown("#### 3. Erwartungswert-Ergebnis")
 
-            # ── Probability Summary ──────────────────────────────────────────────
             col_ev_r1, col_ev_r2, col_ev_r3 = st.columns(3)
-
             with col_ev_r1:
                 p = ev["p_full_success_combined"]
-                css = "positive" if p > 0.5 else "neutral"
                 st.markdown(
-                    f'<div class="ev-card {css}">'
+                    f'<div class="ev-card {"positive" if p > 0.5 else "neutral"}">'
                     f'<div class="ev-value" style="color:#2c6e49">{p:.0%}</div>'
-                    f'<div class="ev-label">Vollständiges Obsiegen</div>'
-                    f"</div>",
+                    f'<div class="ev-label">Vollständiges Obsiegen</div></div>',
                     unsafe_allow_html=True,
                 )
-
             with col_ev_r2:
                 p2 = ev["p_partial_success_combined"]
                 st.markdown(
                     f'<div class="ev-card neutral">'
                     f'<div class="ev-value" style="color:#7d5a00">{p2:.0%}</div>'
-                    f'<div class="ev-label">Teilweises Obsiegen</div>'
-                    f"</div>",
+                    f'<div class="ev-label">Teilweises Obsiegen</div></div>',
                     unsafe_allow_html=True,
                 )
-
             with col_ev_r3:
                 p3 = ev["p_failure_combined"]
-                css3 = "negative" if p3 > 0.5 else "neutral"
                 st.markdown(
-                    f'<div class="ev-card {css3}">'
+                    f'<div class="ev-card {"negative" if p3 > 0.5 else "neutral"}">'
                     f'<div class="ev-value" style="color:#8b1a1a">{p3:.0%}</div>'
-                    f'<div class="ev-label">Unterliegen</div>'
-                    f"</div>",
+                    f'<div class="ev-label">Unterliegen</div></div>',
                     unsafe_allow_html=True,
                 )
 
             st.markdown("")
-
-            # ── Monetary EV ─────────────────────────────────────────────────────
             ev_prob = ev["ev_success_probability"]
-            col_ev_m1, col_ev_m2 = st.columns(2)
+            color_ev = "#2c6e49" if ev_prob > 0.55 else "#7d5a00" if ev_prob > 0.4 else "#8b1a1a"
 
+            col_ev_m1, col_ev_m2 = st.columns(2)
             with col_ev_m1:
-                color = "#2c6e49" if ev_prob > 0.55 else "#7d5a00" if ev_prob > 0.4 else "#8b1a1a"
                 st.markdown(
                     f'<div class="ev-card">'
-                    f'<div class="ev-value" style="color:{color}">{ev_prob:.0%}</div>'
+                    f'<div class="ev-value" style="color:{color_ev}">{ev_prob:.0%}</div>'
                     f'<div class="ev-label">Kombinierte Erfolgswahrscheinlichkeit</div>'
                     f'<div class="ev-sublabel">'
-                    f'ML: {ev["ml_weight_applied"]:.0%} &nbsp;|&nbsp; '
-                    f'Juristisch: {ev["juristic_weight_applied"]:.0%}</div>'
-                    f"</div>",
+                    f'ML: {ev["ml_weight_applied"]:.0%} | Juristisch: {ev["juristic_weight_applied"]:.0%}'
+                    f'</div></div>',
                     unsafe_allow_html=True,
                 )
-
                 st.info(f"**Empfehlung:** {ev['recommendation']}")
+
+                # Kostenaufschlüsselung
+                if "cost_risk_detail" in ev:
+                    cr = ev["cost_risk_detail"]
+                    with st.expander("Kostendetail (§ 41 ZPO)"):
+                        st.markdown(
+                            f"- Bei Sieg: **EUR {cr['kosten_bei_sieg_eur']:,.0f}** (vollständig erstattet)\n"
+                            f"- Bei Teilsieg: **EUR {cr['kosten_bei_teilsieg_eur']:,.0f}**\n"
+                            f"- Bei Niederlage: **EUR {cr['kosten_bei_niederlage_eur']:,.0f}** "
+                            f"(RATG + GGG beider Seiten)\n"
+                            f"- **Erwartete Kostenbelastung: EUR {cr['erwartete_kostenbelastung_eur']:,.0f}**"
+                        )
 
             with col_ev_m2:
                 if "ev_gross_eur" in ev:
                     ev_gross = ev["ev_gross_eur"]
                     ev_net = ev.get("ev_net_eur", ev_gross)
                     proceed = ev.get("proceed_recommendation", ev_net > 0)
-                    css_card = "positive" if proceed else "negative"
                     net_color = "#2c6e49" if proceed else "#8b1a1a"
                     verdict = "Klagbetreibung empfohlen" if proceed else "Klagbetreibung nicht empfohlen"
+                    cost_label = ev.get("cost_source", "Kosten")
 
                     st.markdown(
-                        f'<div class="ev-card {css_card}">'
-                        f'<div class="ev-sublabel">Erwartungswert (brutto)</div>'
-                        f'<div style="font-family:IBM Plex Mono,monospace;font-size:1.5rem;'
+                        f'<div class="ev-card {"positive" if proceed else "negative"}">'
+                        f'<div class="ev-sublabel">Erwartungswert (brutto, ohne Kosten)</div>'
+                        f'<div style="font-family:IBM Plex Mono,monospace;font-size:1.4rem;'
                         f'font-weight:600;color:#1c3a5e">EUR {ev_gross:,.0f}</div>'
-                        f'<div class="ev-sublabel" style="margin-top:10px">Erwartungswert (netto, nach Kosten)</div>'
+                        f'<div class="ev-sublabel" style="margin-top:8px">'
+                        f'Erwartete Kostenbelastung ({cost_label})</div>'
+                        f'<div style="font-family:IBM Plex Mono,monospace;font-size:1.1rem;'
+                        f'color:#8b1a1a">− EUR {ev.get("cost_estimate_eur",0):,.0f}</div>'
+                        f'<div class="ev-sublabel" style="margin-top:8px">Netto-Erwartungswert</div>'
                         f'<div style="font-family:IBM Plex Mono,monospace;font-size:1.8rem;'
                         f'font-weight:600;color:{net_color}">EUR {ev_net:,.0f}</div>'
-                        f'<div style="margin-top:10px;font-size:0.82rem;font-family:IBM Plex Sans,sans-serif;'
-                        f'color:{net_color};font-weight:600">{verdict}</div>'
+                        f'<div style="margin-top:8px;font-size:0.82rem;color:{net_color};'
+                        f'font-weight:600">{verdict}</div>'
                         f"</div>",
                         unsafe_allow_html=True,
                     )
 
             # ── Waterfall Chart ──────────────────────────────────────────────────
             if "ev_gross_eur" in ev:
-                sw = ev["streitwert_eur"]
-                costs = ev.get("cost_estimate_eur", 0)
+                sw_val = ev["streitwert_eur"]
+                costs_val = ev.get("cost_estimate_eur", 0) or 0
                 ev_g = ev["ev_gross_eur"]
                 ev_n = ev.get("ev_net_eur", ev_g)
 
@@ -1128,9 +1387,14 @@ with tab_ev:
                     name="EV",
                     orientation="v",
                     measure=["absolute", "relative", "relative", "total"],
-                    x=["Streitwert", "Erfolgsfaktor", "Verfahrenskosten", "Netto-EV"],
-                    y=[sw, ev_g - sw, -costs, 0],
-                    text=[f"EUR {sw:,.0f}", f"EUR {ev_g-sw:,.0f}", f"-EUR {costs:,.0f}", f"EUR {ev_n:,.0f}"],
+                    x=["Streitwert", "Erfolgsfaktor", "Verfahrenskosten (erwartet)", "Netto-EV"],
+                    y=[sw_val, ev_g - sw_val, -costs_val, 0],
+                    text=[
+                        f"EUR {sw_val:,.0f}",
+                        f"EUR {ev_g - sw_val:,.0f}",
+                        f"−EUR {costs_val:,.0f}",
+                        f"EUR {ev_n:,.0f}",
+                    ],
                     textposition="outside",
                     connector={"line": {"color": "#aaaaaa", "width": 1}},
                     increasing={"marker": {"color": "#2c6e49"}},
@@ -1138,25 +1402,124 @@ with tab_ev:
                     totals={"marker": {"color": "#1c3a5e"}},
                 ))
                 fig_wf.update_layout(
-                    title=None,
-                    height=320,
-                    showlegend=False,
-                    paper_bgcolor="white",
-                    plot_bgcolor="#f5f5f5",
+                    height=320, showlegend=False,
+                    paper_bgcolor="white", plot_bgcolor="#f5f5f5",
                     font=dict(family="IBM Plex Sans, sans-serif", size=11),
                 )
                 fig_wf.update_yaxes(showgrid=True, gridcolor="#dddddd")
                 st.plotly_chart(fig_wf, use_container_width=True)
 
-            # ── Export ───────────────────────────────────────────────────────────
-            combined = {
-                "ml_prediction": ml_result,
-                "erwartungswert": ev,
+        # ── Schritt 4: Vorbringen / Gegenvorbringen aktualisieren ────────────────
+        st.markdown("---")
+        st.markdown("#### 4. Aktualisierung nach neuem Vorbringen / Gegenvorbringen")
+        st.caption(
+            "Nach Einbringung weiterer Schriftsätze: Aktualisiertes Vorbringen "
+            "re-embedden und neue Vorhersage berechnen."
+        )
+
+        if st.session_state.prediction_case_dict is None:
+            st.info("Bitte zuerst eine Vorhersage berechnen.")
+        elif not st.session_state.openai_api_key:
+            st.warning("OpenAI API-Key für Re-Embedding erforderlich.")
+        else:
+            with st.form("vorbringen_update_form"):
+                vb_c1, vb_c2 = st.columns(2)
+                with vb_c1:
+                    new_klaeger = st.text_area(
+                        "Aktualisiertes Kläger-Vorbringen",
+                        placeholder="Neues / ergänztes Vorbringen des Klägers…",
+                        height=100,
+                    )
+                with vb_c2:
+                    new_beklagter = st.text_area(
+                        "Aktualisiertes Gegenvorbringen (Beklagter)",
+                        placeholder="Neues Gegenvorbringen, Einwendungen, Beweise…",
+                        height=100,
+                    )
+                new_beweise = st.text_area(
+                    "Aktualisierte Beweislage",
+                    placeholder="Neue Beweismittel, Sachverständigenaussagen…",
+                    height=70,
+                )
+                update_btn = st.form_submit_button(
+                    "Vorhersage mit aktualisierten Texten berechnen",
+                    type="primary",
+                )
+
+            if update_btn and (new_klaeger or new_beklagter or new_beweise):
+                with st.spinner("Re-Embedding + neue Vorhersage läuft…"):
+                    try:
+                        predictor = st.session_state.predictor
+                        updated = predictor.predict_with_updated_vorbringen(
+                            original_case_dict=st.session_state.prediction_case_dict,
+                            new_klaeger_text=new_klaeger or None,
+                            new_beklagter_text=new_beklagter or None,
+                            new_beweise_text=new_beweise or None,
+                            api_key=st.session_state.openai_api_key,
+                        )
+                        st.session_state.updated_prediction = updated
+                    except Exception as e:
+                        st.error(f"Fehler: {e}")
+
+            upd = st.session_state.updated_prediction
+            if upd:
+                orig = st.session_state.prediction_result
+                st.markdown("**Vergleich: Original vs. nach Vorbringen-Update**")
+
+                upd_cols = st.columns(3)
+                deltas = {
+                    "P(Obsiegen)":   (orig["p_win"],     upd["p_win"]),
+                    "P(Teilweise)":  (orig["p_partial"],  upd["p_partial"]),
+                    "P(Unterliegen)":(orig["p_loss"],     upd["p_loss"]),
+                }
+                for col, (label, (v_orig, v_upd)) in zip(upd_cols, deltas.items()):
+                    delta = v_upd - v_orig
+                    col.metric(label, f"{v_upd:.1%}", f"{delta:+.1%}")
+
+                # EV nach Update (mit bestehenden RATG-Kosten)
+                if st.session_state.ev_result and "juristic_estimate_input" in st.session_state.ev_result:
+                    old_ev = st.session_state.ev_result
+                    jur_inp = old_ev["juristic_estimate_input"]
+                    w_ml_inp = old_ev["ml_weight_applied"]
+                    w_j_inp = old_ev["juristic_weight_applied"]
+                    predictor = st.session_state.predictor
+                    new_ev = predictor.compute_expected_value(
+                        ml_result=upd,
+                        juristic_estimate=jur_inp,
+                        w_ml=w_ml_inp,
+                        w_jurist=w_j_inp,
+                        streitwert_eur=old_ev.get("streitwert_eur"),
+                        ratg_result=st.session_state.ratg_result,
+                        cost_estimate_eur=old_ev.get("cost_estimate_eur") if not st.session_state.ratg_result else None,
+                    )
+                    ev_new_prob = new_ev["ev_success_probability"]
+                    ev_old_prob = old_ev["ev_success_probability"]
+                    delta_ev = ev_new_prob - ev_old_prob
+                    color_new = "#2c6e49" if ev_new_prob > 0.55 else "#7d5a00" if ev_new_prob > 0.4 else "#8b1a1a"
+                    st.markdown(
+                        f'<div class="ev-card">'
+                        f'<div class="ev-sublabel">Neue kombinierte Erfolgswahrscheinlichkeit</div>'
+                        f'<div class="ev-value" style="color:{color_new}">{ev_new_prob:.0%}</div>'
+                        f'<div class="ev-sublabel">Veränderung: {delta_ev:+.1%} gegenüber Original</div>'
+                        f'<div style="margin-top:4px;font-size:0.82rem">{new_ev["recommendation"]}</div>'
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+
+        # ── Export ───────────────────────────────────────────────────────────────
+        if st.session_state.ev_result:
+            st.markdown("---")
+            combined_export = {
+                "ml_prediction": st.session_state.prediction_result,
+                "juristische_analyse": st.session_state.juristic_analysis,
+                "ratg_kosten": st.session_state.ratg_result,
+                "erwartungswert": st.session_state.ev_result,
+                "updated_prediction": st.session_state.updated_prediction,
             }
             st.download_button(
                 "Vollständigen Bericht als JSON exportieren",
-                data=json.dumps(combined, ensure_ascii=False, indent=2).encode(),
-                file_name="erwartungswert_analyse.json",
+                data=json.dumps(combined_export, ensure_ascii=False, indent=2).encode(),
+                file_name="litigation_analyse_komplett.json",
                 mime="application/json",
             )
 

@@ -180,14 +180,14 @@ NN_CONFIG_MEDIUM = {                 # Medium: reduced hidden, deeper fusion, mo
     "num_classes": 3,
 }
 
-NN_CONFIG_LARGE = {                  # Large: single-layer encoder, heavy dropout/L2 + noise
-    "embedding_hidden_dim": 0,       # Single linear projection 3072→128 (no hidden layer)
-    "embedding_output_dim": 128,     # 3 × (3072×128) ≈ 1.18 M vs 2.4 M → −50 %
-    "embedding_noise_std": 0.02,     # Gaussian noise (strong regularization)
+NN_CONFIG_LARGE = {                  # Large: 2-layer encoder, moderate dropout + noise
+    "embedding_hidden_dim": 256,     # Restore nonlinear projection: 3072→256→256
+    "embedding_output_dim": 256,     # Larger per-section encoding (3×256=768 fusion input)
+    "embedding_noise_std": 0.02,     # Gaussian noise (regularization)
     "structured_hidden_dim": 128,
-    "fusion_dims": [512, 256],
-    "dropout_embedding": 0.50,
-    "dropout_fusion": 0.45,
+    "fusion_dims": [512, 256],       # 768→512→256
+    "dropout_embedding": 0.35,       # Reduced: 50% caused underfitting at ~57% val-acc
+    "dropout_fusion": 0.35,
     "num_classes": 3,
 }
 
@@ -227,7 +227,7 @@ TRAINING_CONFIG_LARGE = {
     "epochs": 400,
     "batch_size": 32,
     "learning_rate": 3e-4,
-    "weight_decay": 1e-3,
+    "weight_decay": 5e-4,            # Reduced from 1e-3: less regularization to match lower dropout
     "lr_scheduler_patience": 25,
     "lr_scheduler_factor": 0.5,
     "early_stopping_patience": 60,

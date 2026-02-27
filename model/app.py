@@ -837,72 +837,45 @@ with tab_predict:
 
         with col_input1:
             with st.form("predict_form"):
-                st.markdown("**Falldaten**")
-                fc1, fc2 = st.columns(2)
-
+                fc1, fc2 = st.columns([2, 3])
                 with fc1:
                     p_streitwert = st.number_input(
                         "Streitwert (EUR)", min_value=0.0, step=500.0, value=10000.0
                     )
+                with fc2:
                     p_claim_type = st.selectbox("Anspruchsart", CLAIM_TYPES + ["Andere"])
 
-                with fc2:
-                    p_instanz = st.selectbox("Instanz (Erstgericht)", ["BG", "LG", "OLG", "OGH"])
-                    p_sv = st.checkbox("Sachverständiger bestellt")
-
-                with st.expander("Einwendungen des Beklagten"):
-                    ew_c = st.columns(3)
-                    p_einwendungen = {}
-                    for i, d in enumerate(DEFENSE_TYPES):
-                        with ew_c[i % 3]:
-                            p_einwendungen[d] = st.checkbox(
-                                DEFENSE_LABELS.get(d, d), key=f"pred_ew_{d}"
-                            )
-
-                st.markdown("**Textvorbringen & Beweise** (für Embedding-Vektoren)")
                 p_klaeger_text = st.text_area(
                     "Kläger-Vorbringen",
-                    placeholder="Beschreiben Sie das Vorbringen des Klägers...",
-                    height=100,
+                    placeholder="Vorbringen des Klägers…",
+                    height=110,
                 )
                 p_beklagter_text = st.text_area(
                     "Beklagten-Vorbringen",
-                    placeholder="Einwendungen und Vorbringen des Beklagten...",
-                    height=80,
+                    placeholder="Einwendungen des Beklagten…",
+                    height=90,
                 )
                 p_aufgenommene_beweise = st.text_area(
                     "Aufgenommene Beweise",
-                    placeholder=(
-                        "Faktische Beschreibung der tatsächlich aufgenommenen Beweise — "
-                        "ohne eigene Bewertung. Beispiel: 'Drei Zeugen bestätigten "
-                        "übereinstimmend das klägerische Vorbringen; zwei Urkunden "
-                        "(Rechnungen) sprechen dagegen; ein bautechnisches "
-                        "Sachverständigengutachten liegt vor.'"
-                    ),
-                    height=100,
-                    help=(
-                        "Beschreiben Sie Art und Anzahl der Beweismittel (Zeugen, "
-                        "Urkunden, Sachverständige), welche Partei sie beigebracht hat "
-                        "und ob sie das jeweilige Vorbringen stützen oder widerlegen. "
-                        "Keine rechtliche Bewertung."
-                    ),
+                    placeholder="Art und Anzahl der aufgenommenen Beweise (ohne Bewertung)…",
+                    height=90,
                 )
 
                 predict_btn = st.form_submit_button(
-                    "Vorhersage berechnen", type="primary"
+                    "Vorhersage berechnen", type="primary", use_container_width=True
                 )
 
         if predict_btn:
             case_dict = {
                 "structured": {
                     "streitwert_eur": p_streitwert if p_streitwert > 0 else None,
-                    "instanz": p_instanz,
+                    "instanz": "BG",
                     "anspruchsart": p_claim_type,
                     "anspruchsgruende": [],
-                    "einwendungen": p_einwendungen,
+                    "einwendungen": {d: False for d in DEFENSE_TYPES},
                     "klaeger_beweismittel": [],
                     "beklagter_beweismittel": [],
-                    "sachverstaendiger_bestellt": p_sv,
+                    "sachverstaendiger_bestellt": False,
                 }
             }
 

@@ -36,9 +36,8 @@ OPENAI_EXTRACTION_MODEL = "gpt-5-mini"
 OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
 EMBEDDING_DIM = 3072  # Dimension of text-embedding-3-large
 
-# Juristische Analyse: Search-fähiges Modell mit Reasoning und Web-Zugriff.
-# Nutzt die Web-Search-Funktion des Modells (bevorzugt ris.bka.gv.at).
-LEGAL_ANALYSIS_MODEL = "gpt-4o-search-preview"
+# Juristische Analyse: GPT 5.2 mit Reasoning und Web-Suche (ris.bka.gv.at).
+LEGAL_ANALYSIS_MODEL = "gpt-5.2"
 
 # API rate limiting (per worker thread)
 OPENAI_REQUEST_DELAY_SEC = 0.3       # Delay between sequential API calls within one file

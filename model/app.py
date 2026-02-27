@@ -838,37 +838,26 @@ with tab_predict:
         with col_input1:
             with st.form("predict_form"):
                 st.markdown("**Falldaten**")
-                fc1, fc2, fc3 = st.columns(3)
+                fc1, fc2 = st.columns(2)
 
                 with fc1:
                     p_streitwert = st.number_input(
                         "Streitwert (EUR)", min_value=0.0, step=500.0, value=10000.0
                     )
-                    p_instanz = st.selectbox("Instanz", ["BG", "LG", "OLG", "OGH"])
+                    p_claim_type = st.selectbox("Anspruchsart", CLAIM_TYPES + ["Andere"])
 
                 with fc2:
-                    p_claim_type = st.selectbox("Anspruchsart", CLAIM_TYPES + ["Andere"])
-                    p_anspruchsgruende = st.number_input(
-                        "Anzahl Anspruchsgrundlagen", 1, 10, 2
-                    )
-
-                with fc3:
-                    p_klaeger_beweismittel = st.number_input(
-                        "Kläger-Beweismittel (Anzahl)", 0, 20, 3
-                    )
-                    p_beklagter_beweismittel = st.number_input(
-                        "Beklagten-Beweismittel (Anzahl)", 0, 20, 2
-                    )
+                    p_instanz = st.selectbox("Instanz (Erstgericht)", ["BG", "LG", "OLG", "OGH"])
                     p_sv = st.checkbox("Sachverständiger bestellt")
 
-                st.markdown("**Einwendungen des Beklagten**")
-                ew_c = st.columns(4)
-                p_einwendungen = {}
-                for i, d in enumerate(DEFENSE_TYPES):
-                    with ew_c[i % 4]:
-                        p_einwendungen[d] = st.checkbox(
-                            DEFENSE_LABELS.get(d, d), key=f"pred_ew_{d}"
-                        )
+                with st.expander("Einwendungen des Beklagten"):
+                    ew_c = st.columns(3)
+                    p_einwendungen = {}
+                    for i, d in enumerate(DEFENSE_TYPES):
+                        with ew_c[i % 3]:
+                            p_einwendungen[d] = st.checkbox(
+                                DEFENSE_LABELS.get(d, d), key=f"pred_ew_{d}"
+                            )
 
                 st.markdown("**Textvorbringen & Beweise** (für Embedding-Vektoren)")
                 p_klaeger_text = st.text_area(
@@ -909,10 +898,10 @@ with tab_predict:
                     "streitwert_eur": p_streitwert if p_streitwert > 0 else None,
                     "instanz": p_instanz,
                     "anspruchsart": p_claim_type,
-                    "anspruchsgruende": [""] * p_anspruchsgruende,
+                    "anspruchsgruende": [],
                     "einwendungen": p_einwendungen,
-                    "klaeger_beweismittel": [""] * p_klaeger_beweismittel,
-                    "beklagter_beweismittel": [""] * p_beklagter_beweismittel,
+                    "klaeger_beweismittel": [],
+                    "beklagter_beweismittel": [],
                     "sachverstaendiger_bestellt": p_sv,
                 }
             }

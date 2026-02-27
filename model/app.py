@@ -450,7 +450,7 @@ with tab_train:
 
             **Nicht im Input**: Feststellungen, Beweiswürdigung, Rechtliche Beurteilung
 
-            **Strukturierte Features:** {fe.feature_dim} dim (Streitwert, Anspruchsart, Einwendungen, ...)
+            **Structured Features (intern):** {fe.feature_dim} dim (werden bei Vorhersage auf Standardwerte gesetzt)
 
             **Output:** 3 Klassen (Unterliegen / Teilweise / Obsiegen)
             """)
@@ -837,23 +837,15 @@ with tab_predict:
 
         with col_input1:
             with st.form("predict_form"):
-                fc1, fc2 = st.columns([2, 3])
-                with fc1:
-                    p_streitwert = st.number_input(
-                        "Streitwert (EUR)", min_value=0.0, step=500.0, value=10000.0
-                    )
-                with fc2:
-                    p_claim_type = st.selectbox("Anspruchsart", CLAIM_TYPES + ["Andere"])
-
                 p_klaeger_text = st.text_area(
                     "Kläger-Vorbringen",
                     placeholder="Vorbringen des Klägers…",
-                    height=110,
+                    height=140,
                 )
                 p_beklagter_text = st.text_area(
                     "Beklagten-Vorbringen",
                     placeholder="Einwendungen des Beklagten…",
-                    height=110,
+                    height=140,
                 )
 
                 predict_btn = st.form_submit_button(
@@ -863,9 +855,9 @@ with tab_predict:
         if predict_btn:
             case_dict = {
                 "structured": {
-                    "streitwert_eur": p_streitwert if p_streitwert > 0 else None,
+                    "streitwert_eur": None,
                     "instanz": "BG",
-                    "anspruchsart": p_claim_type,
+                    "anspruchsart": "Andere",
                     "anspruchsgruende": [],
                     "einwendungen": {d: False for d in DEFENSE_TYPES},
                     "klaeger_beweismittel": [],
@@ -891,9 +883,7 @@ with tab_predict:
             elif not st.session_state.openai_api_key and (p_klaeger_text or p_beklagter_text):
                 st.warning(
                     "Kein OpenAI API-Key gesetzt — Textvorbringen wird **nicht** als Embedding "
-                    "in die Vorhersage einbezogen. Die Vorhersage basiert ausschließlich auf den "
-                    "strukturierten Merkmalen (Streitwert, Anspruchsart, Einwendungen etc.). "
-                    "Bitte API-Key in der Sidebar eintragen, damit Textänderungen das Ergebnis beeinflussen."
+                    "in die Vorhersage einbezogen. Bitte API-Key in der Sidebar eintragen."
                 )
 
             with st.spinner("Berechne Vorhersage..."):

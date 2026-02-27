@@ -168,8 +168,7 @@ class LitigationDataset(torch.utils.data.Dataset):
     PyTorch Dataset for litigation cases.
 
     Each item returns:
-    - embeddings: list of 5 tensors (one per section), each shape (EMBEDDING_DIM,)
-    - structured: tensor of shape (feature_dim,)
+    - embeddings: list of tensors (one per section), each shape (EMBEDDING_DIM,)
     - label: int (0, 1, 2)
     """
 
@@ -177,11 +176,9 @@ class LitigationDataset(torch.utils.data.Dataset):
         self,
         cases: list[dict],
         embeddings_dict: dict[str, dict[str, np.ndarray]],
-        structured_features: np.ndarray,
     ):
         self.cases = cases
         self.embeddings_dict = embeddings_dict
-        self.structured_features = structured_features
 
         # Filter to cases that have all required data
         self.valid_indices = [
@@ -208,21 +205,15 @@ class LitigationDataset(torch.utils.data.Dataset):
                 vec = np.zeros(EMBEDDING_DIM, dtype=np.float32)
             embeddings.append(torch.tensor(vec, dtype=torch.float32))
 
-        # Structured features
-        structured = torch.tensor(
-            self.structured_features[case_idx], dtype=torch.float32
-        )
-
         # Label
         label = int(case["structured"]["outcome"])
 
-        return embeddings, structured, label
+        return embeddings, label
 
 
 def prepare_dataset(
     cases: list[dict],
     embeddings_dict: dict[str, dict],
-    feature_engineer: FeatureEngineer,
     val_split: float = TRAINING_CONFIG["val_split"],
     random_seed: int = TRAINING_CONFIG["random_seed"],
 ) -> tuple["LitigationDataset", "LitigationDataset", "LitigationDataset"]:
@@ -234,10 +225,7 @@ def prepare_dataset(
     """
     np.random.seed(random_seed)
 
-    # Encode structured features
-    structured_features = feature_engineer.fit_transform(cases)
-
-    full_dataset = LitigationDataset(cases, embeddings_dict, structured_features)
+    full_dataset = LitigationDataset(cases, embeddings_dict)
 
     if len(full_dataset) == 0:
         raise ValueError("No valid labeled cases with embeddings found.")
@@ -283,8 +271,7 @@ class _SubsetDataset(torch.utils.data.Dataset):
 def collate_fn(batch: list) -> tuple:
     """Custom collate for multi-section embeddings."""
     embeddings_batch = [item[0] for item in batch]
-    structured_batch = torch.stack([item[1] for item in batch])
-    labels_batch = torch.tensor([item[2] for item in batch], dtype=torch.long)
+    labels_batch = torch.tensor([item[1] for item in batch], dtype=torch.long)
 
     # Transpose: (batch, n_sections, dim) → list of (batch, dim)
     n_sections = len(EMBEDDING_SECTIONS)
@@ -293,7 +280,7 @@ def collate_fn(batch: list) -> tuple:
         for s in range(n_sections)
     ]
 
-    return embeddings_by_section, structured_batch, labels_batch
+    return embeddings_by_section, labels_batch
 
 
 def compute_class_weights(cases: list[dict]) -> torch.Tensor:

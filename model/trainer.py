@@ -105,23 +105,18 @@ class LitigationTrainer:
         train_ds, val_ds, full_ds = prepare_dataset(
             cases,
             embeddings_dict,
-            self.feature_engineer,
             val_split=self.config["val_split"],
             random_seed=self.config["random_seed"],
         )
 
-        # We use feature_dim from the feature engineer
-        feature_dim = self.feature_engineer.feature_dim
-
-        return train_ds, val_ds, full_ds, feature_dim
+        return train_ds, val_ds, full_ds
 
     def build_model(
         self,
-        structured_dim: int,
         nn_config: Optional[dict] = None,
     ) -> LitigationClassifier:
         """Initialize the neural network with the given (or default) config."""
-        kwargs = {"structured_dim": structured_dim}
+        kwargs = {}
         if nn_config is not None:
             kwargs["config"] = nn_config
         model = LitigationClassifier(**kwargs)
@@ -207,13 +202,12 @@ class LitigationTrainer:
         # ── Data Preparation ─────────────────────────────────────────────────────
         self._log(phase="preparing", message="Daten werden vorbereitet...")
 
-        train_ds, val_ds, full_ds, feature_dim = self.prepare_data(cases, embeddings_dict)
+        train_ds, val_ds, full_ds = self.prepare_data(cases, embeddings_dict)
 
         self._log(
             phase="prepared",
             train_size=len(train_ds),
             val_size=len(val_ds),
-            feature_dim=feature_dim,
         )
 
         if len(train_ds) < 2:
@@ -240,7 +234,7 @@ class LitigationTrainer:
         ) if len(val_ds) > 0 else None
 
         # ── Model & Optimizer ────────────────────────────────────────────────────
-        model = self.build_model(feature_dim, nn_config=active_nn_config)
+        model = self.build_model(nn_config=active_nn_config)
 
         self._log(
             phase="model_built",
@@ -302,13 +296,12 @@ class LitigationTrainer:
             model.train()
             train_loss, train_correct, train_total = 0.0, 0, 0
 
-            for emb_batch, struct_batch, label_batch in train_loader:
+            for emb_batch, label_batch in train_loader:
                 emb_batch = [e.to(self.device) for e in emb_batch]
-                struct_batch = struct_batch.to(self.device)
                 label_batch = label_batch.to(self.device)
 
                 optimizer.zero_grad()
-                logits, _ = model(emb_batch, struct_batch)
+                logits, _ = model(emb_batch)
                 loss = criterion(logits, label_batch)
                 loss.backward()
 
@@ -507,12 +500,11 @@ class LitigationTrainer:
         total_loss, correct, total = 0.0, 0, 0
 
         with torch.no_grad():
-            for emb_batch, struct_batch, label_batch in loader:
+            for emb_batch, label_batch in loader:
                 emb_batch = [e.to(self.device) for e in emb_batch]
-                struct_batch = struct_batch.to(self.device)
                 label_batch = label_batch.to(self.device)
 
-                logits, _ = model(emb_batch, struct_batch)
+                logits, _ = model(emb_batch)
                 loss = criterion(logits, label_batch)
 
                 total_loss += loss.item() * len(label_batch)
@@ -535,8 +527,7 @@ class LitigationTrainer:
         if self.model is None:
             raise RuntimeError("Model not trained/loaded.")
 
-        structured_features = self.feature_engineer.transform(cases)
-        full_ds = LitigationDataset(cases, embeddings_dict, structured_features)
+        full_ds = LitigationDataset(cases, embeddings_dict)
         loader = DataLoader(
             full_ds, batch_size=32, shuffle=False, collate_fn=collate_fn
         )
@@ -545,11 +536,10 @@ class LitigationTrainer:
         all_preds, all_labels, all_probs = [], [], []
 
         with torch.no_grad():
-            for emb_batch, struct_batch, label_batch in loader:
+            for emb_batch, label_batch in loader:
                 emb_batch = [e.to(self.device) for e in emb_batch]
-                struct_batch = struct_batch.to(self.device)
 
-                logits, probs = self.model(emb_batch, struct_batch)
+                logits, probs = self.model(emb_batch)
                 preds = logits.argmax(dim=-1)
 
                 all_preds.extend(preds.cpu().numpy())
@@ -636,7 +626,6 @@ class LitigationTrainer:
                     "model_type": "neural_net",
                     "model_state_dict": self.model.state_dict(),
                     "model_config": self.model.config,
-                    "structured_dim": self.model.structured_encoder.encoder[0].in_features,
                     "history": self.history,
                 },
                 MODEL_CHECKPOINT,
@@ -676,9 +665,7 @@ class LitigationTrainer:
             return True
 
         # ── Neural network checkpoint ─────────────────────────────────────────
-        structured_dim = checkpoint["structured_dim"]
         self.model = LitigationClassifier(
-            structured_dim=structured_dim,
             config=checkpoint.get("model_config", {}),
         )
 

@@ -46,7 +46,6 @@ from config import (
     TRAINING_HISTORY_FILE,
 )
 from data_extractor.data_manager import DataManager
-from model.feature_engineer import FeatureEngineer
 from model.legal_analyzer import LegalAnalyzer
 from model.predictor import LitigationPredictor
 from model.ratg_calculator import calculate_ratg_costs
@@ -418,7 +417,6 @@ with tab_train:
 
     # ── Architecture Info ────────────────────────────────────────────────────────
     with st.expander("Modell-Architektur", expanded=False):
-        fe = FeatureEngineer()
         if n_cases < KNN_THRESHOLD:
             st.markdown(f"""
             **Aktiver Modus: k-Nearest-Neighbour** (< {KNN_THRESHOLD} Fälle)
@@ -434,23 +432,21 @@ with tab_train:
             st.markdown(f"""
             **Aktiver Modus: Neuronales Netz** (≥ {KNN_THRESHOLD} Fälle)
             - **Embedding Encoder** (3×): Linear(3072 → 256) + LayerNorm + GELU + Dropout → Linear(256 → 128)
-            - **Structured Encoder**: Linear({fe.feature_dim} → 64) + LayerNorm + GELU
-            - **Fusion Network**: Linear(448 → 128) + LayerNorm + GELU + Dropout → Linear(128 → 3)
+            - **Fusion Network**: Linear(384 → 128) + LayerNorm + GELU + Dropout → Linear(128 → 3)
             - **Loss**: Focal Loss (γ=2) mit Klassen-Gewichtung
             - **Optimizer**: AdamW mit ReduceLROnPlateau
             - **Regularisierung**: LayerNorm, Dropout, Gradient Clipping, Early Stopping
-            - **Parameter gesamt**: ~2,56 Mio.
+            - **Parameter gesamt**: ~1,19 Mio.
 
             **Input-Embeddings (3 Abschnitte):**
             - **Kläger-Vorbringen**: Was begehrt der Kläger?
             - **Beklagten-Vorbringen**: Welche Einwendungen macht der Beklagte?
             - **Aufgenommene Beweise**: Faktische Beschreibung der aufgenommenen Beweise
               (Art, Anzahl, welche Partei — ohne Bewertung)
-            - 3 × 128 = 384 dim nach Encodierung + 64 dim strukturiert = **448 dim Fusion-Input**
+            - 3 × 128 = **384 dim Fusion-Input**
 
-            **Nicht im Input**: Feststellungen, Beweiswürdigung, Rechtliche Beurteilung
-
-            **Structured Features (intern):** {fe.feature_dim} dim (werden bei Vorhersage auf Standardwerte gesetzt)
+            **Nicht im Input**: Feststellungen, Beweiswürdigung, Rechtliche Beurteilung,
+            strukturierte Merkmale (Streitwert, Anspruchsart, Einwendungen) — rein embedding-basiert.
 
             **Output:** 3 Klassen (Unterliegen / Teilweise / Obsiegen)
             """)
@@ -520,10 +516,10 @@ with tab_train:
                 )
 
             elif phase == "prepared":
-                st.session_state.training_log.append(
-                    f'[OK]  Train: {kwargs["train_size"]} | Val: {kwargs["val_size"]} | '
-                    f'Features: {kwargs["feature_dim"]}'
-                )
+                log_line = f'[OK]  Train: {kwargs["train_size"]} | Val: {kwargs["val_size"]}'
+                if "feature_dim" in kwargs:
+                    log_line += f' | Features: {kwargs["feature_dim"]}'
+                st.session_state.training_log.append(log_line)
 
             elif phase == "model_built":
                 st.session_state.training_log.append(

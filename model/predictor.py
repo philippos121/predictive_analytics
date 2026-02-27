@@ -15,11 +15,8 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
-    DEFENSE_LABELS,
-    DEFENSE_TYPES,
     EMBEDDING_DIM,
     EMBEDDING_SECTIONS,
-    OUTCOME_COLORS,
     OUTCOME_LABELS,
 )
 from model.feature_engineer import FeatureEngineer
@@ -80,12 +77,6 @@ class LitigationPredictor:
 
         self.model.eval()
 
-        # Encode structured features
-        structured = self.feature_engineer.encode_single_transform(case_dict)
-        structured_tensor = torch.tensor(
-            structured, dtype=torch.float32
-        ).unsqueeze(0).to(self.device)
-
         # Load embeddings
         emb_tensors = []
         for section in EMBEDDING_SECTIONS:
@@ -100,7 +91,7 @@ class LitigationPredictor:
             )
 
         with torch.no_grad():
-            logits, probs = self.model(emb_tensors, structured_tensor)
+            logits, probs = self.model(emb_tensors)
 
         probs_np = probs.cpu().numpy()[0]
         predicted_class = int(probs_np.argmax())
@@ -290,47 +281,5 @@ class LitigationPredictor:
             return "NICHT EMPFOHLEN — Geringe Erfolgschancen"
 
     def get_feature_importance(self) -> Optional[dict]:
-        """
-        Approximate feature importance via gradient analysis.
-        Only available if neural network is trained (not for kNN mode).
-        """
-        if self.trainer.knn is not None:
-            return None
-
-        if self.model is None:
-            return None
-
-        # Feature names from feature engineer
-        feature_names = []
-        feature_names.append("log_streitwert")
-        for ct in __import__(
-            "config", fromlist=["CLAIM_TYPES"]
-        ).CLAIM_TYPES:
-            feature_names.append(f"claim_{ct}")
-        feature_names.append("claim_Andere")
-        for d in DEFENSE_TYPES:
-            feature_names.append(f"defense_{d}")
-        feature_names.extend([
-            "klaeger_evidence_count",
-            "beklagter_evidence_count",
-            "legal_basis_count",
-        ])
-        for inst in ["BG", "LG", "OLG", "OGH"]:
-            feature_names.append(f"instanz_{inst}")
-        feature_names.append("sachverstaendiger")
-
-        # Get structured encoder weights as proxy
-        weights = self.model.structured_encoder.encoder[0].weight.data.abs()
-        importance = weights.mean(dim=0).cpu().numpy()
-
-        if len(importance) != len(feature_names):
-            return None
-
-        return {
-            name: float(imp)
-            for name, imp in sorted(
-                zip(feature_names, importance),
-                key=lambda x: x[1],
-                reverse=True,
-            )
-        }
+        """Not available — model uses embeddings only (no structured features)."""
+        return None

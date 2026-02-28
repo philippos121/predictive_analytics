@@ -23,9 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
     APP_TITLE_EXTRACTOR,
     APP_VERSION,
-    CLAIM_TYPES,
-    DEFENSE_LABELS,
-    DEFENSE_TYPES,
+    EMBEDDING_DIM,
     EMBEDDING_SECTION_LABELS,
     OPENAI_EXTRACTION_MODEL,
     OUTCOME_COLORS,
@@ -508,7 +506,6 @@ with tab_extract:
                                     "status": "success",
                                     "case_id": case_id,
                                     "outcome": extracted["structured"].get("outcome"),
-                                    "streitwert": extracted["structured"].get("streitwert_eur"),
                                 })
                             elif res["status"] == "gefiltert":
                                 results["gefiltert"] += 1
@@ -588,10 +585,8 @@ with tab_dataset:
 
         st.divider()
 
-        col_chart1, col_chart2 = st.columns(2)
-
         # ── Outcome Distribution ──────────────────────────────────────────────────
-        with col_chart1:
+        with st.container():
             st.markdown("**Urteilsergebnisse**")
             outcome_data = stats["outcome_distribution"]
             if sum(outcome_data.values()) > 0:
@@ -617,66 +612,6 @@ with tab_dataset:
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-        # ── Claim Type Distribution ───────────────────────────────────────────────
-        with col_chart2:
-            st.markdown("**Anspruchsarten**")
-            ct_data = stats.get("claim_type_distribution", {})
-            if ct_data:
-                ct_df = pd.DataFrame(
-                    list(ct_data.items()), columns=["Anspruchsart", "Anzahl"]
-                ).sort_values("Anzahl", ascending=True)
-                fig2 = px.bar(
-                    ct_df,
-                    x="Anzahl",
-                    y="Anspruchsart",
-                    orientation="h",
-                    color_discrete_sequence=["#1c3a5e"],
-                )
-                fig2.update_layout(
-                    height=280,
-                    margin=dict(t=10, b=10, l=10, r=10),
-                    showlegend=False,
-                    paper_bgcolor="white",
-                    plot_bgcolor="#f5f5f5",
-                    font=dict(family="IBM Plex Sans, sans-serif", size=11),
-                )
-                fig2.update_xaxes(showgrid=True, gridcolor="#dddddd", gridwidth=1)
-                fig2.update_yaxes(showgrid=False)
-                st.plotly_chart(fig2, use_container_width=True)
-
-        # ── Streitwert Distribution ───────────────────────────────────────────────
-        streitwerte = [
-            c["structured"].get("streitwert_eur")
-            for c in cases
-            if c["structured"].get("streitwert_eur") is not None
-        ]
-
-        if streitwerte:
-            st.markdown("**Streitwert-Verteilung**")
-            sw_stats = stats["streitwert_stats"]
-            sw_col1, sw_col2, sw_col3, sw_col4 = st.columns(4)
-            sw_col1.metric("Min", f"EUR {sw_stats['min']:,.0f}" if sw_stats["min"] else "—")
-            sw_col2.metric("Max", f"EUR {sw_stats['max']:,.0f}" if sw_stats["max"] else "—")
-            sw_col3.metric("Mittelwert", f"EUR {sw_stats['mean']:,.0f}" if sw_stats["mean"] else "—")
-            sw_col4.metric("Median", f"EUR {sw_stats['median']:,.0f}" if sw_stats["median"] else "—")
-
-            sw_df = pd.DataFrame({"Streitwert (EUR)": streitwerte})
-            fig3 = px.histogram(
-                sw_df, x="Streitwert (EUR)",
-                nbins=20,
-                color_discrete_sequence=["#2a6496"],
-            )
-            fig3.update_layout(
-                height=220,
-                margin=dict(t=10, b=30, l=10, r=10),
-                paper_bgcolor="white",
-                plot_bgcolor="#f5f5f5",
-                font=dict(family="IBM Plex Sans, sans-serif", size=11),
-            )
-            fig3.update_xaxes(showgrid=True, gridcolor="#dddddd")
-            fig3.update_yaxes(showgrid=True, gridcolor="#dddddd")
-            st.plotly_chart(fig3, use_container_width=True)
-
         st.divider()
 
         # ── Cases Table ──────────────────────────────────────────────────────────
@@ -690,26 +625,13 @@ with tab_dataset:
             table_data.append({
                 "Fall-ID": c["case_id"],
                 "Datei": c["filename"],
-                "Datum": s.get("datum", "—"),
-                "Gericht": s.get("instanz", "—"),
-                "Anspruchsart": s.get("anspruchsart", "—"),
-                "Streitwert EUR": s.get("streitwert_eur"),
                 "Ergebnis": outcome_label,
                 "Verarbeitet": c.get("processed_at", "")[:10],
             })
 
         if table_data:
             df = pd.DataFrame(table_data)
-            st.dataframe(
-                df,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Streitwert EUR": st.column_config.NumberColumn(
-                        "Streitwert EUR", format="EUR %.0f"
-                    ),
-                },
-            )
+            st.dataframe(df, use_container_width=True, hide_index=True)
 
         # ── Export ───────────────────────────────────────────────────────────────
         st.divider()
@@ -799,9 +721,6 @@ with tab_review:
                     st.warning("Ergebnis nicht extrahiert")
 
             with col_info3:
-                sw = s.get("streitwert_eur")
-                if sw:
-                    st.metric("Streitwert", f"EUR {sw:,.2f}")
                 date = s.get("datum")
                 if date:
                     st.markdown(f"**Datum:** {date}")
@@ -811,126 +730,18 @@ with tab_review:
             # ── Edit Form ────────────────────────────────────────────────────────
             with st.expander("Daten bearbeiten / korrigieren", expanded=False):
                 with st.form(f"edit_form_{selected_case_id}"):
-                    st.markdown("**Grunddaten**")
-
-                    edit_col1, edit_col2, edit_col3 = st.columns(3)
-
-                    with edit_col1:
-                        new_datum = st.text_input(
-                            "Datum (YYYY-MM-DD)",
-                            value=s.get("datum", "") or "",
-                        )
-                        new_gericht = st.text_input(
-                            "Gericht",
-                            value=s.get("gericht", "") or "",
-                        )
-                        _instanz_opts = ["", "BG", "LG", "OLG", "OGH"]
-                        new_instanz = st.selectbox(
-                            "Instanz",
-                            _instanz_opts,
-                            index=_instanz_opts.index(s.get("instanz", "") or "")
-                            if s.get("instanz", "") in _instanz_opts else 0,
-                        )
-
-                    with edit_col2:
-                        new_streitwert = st.number_input(
-                            "Streitwert (EUR)",
-                            min_value=0.0,
-                            value=float(s.get("streitwert_eur") or 0.0),
-                            step=100.0,
-                        )
-                        new_claim_type = st.selectbox(
-                            "Anspruchsart",
-                            CLAIM_TYPES + ["Andere"],
-                            index=(
-                                CLAIM_TYPES.index(s.get("anspruchsart", "Andere"))
-                                if s.get("anspruchsart") in CLAIM_TYPES
-                                else len(CLAIM_TYPES)
-                            ),
-                        )
-
-                    with edit_col3:
-                        new_outcome = st.selectbox(
-                            "Urteilsergebnis (Outcome) *",
-                            [0, 1, 2],
-                            format_func=lambda x: f"{x} — {OUTCOME_LABELS[x]}",
-                            index=int(s.get("outcome") or 0),
-                        )
-                        new_zugesprochener_anteil = st.slider(
-                            "Zugesprochener Anteil (%)",
-                            0, 100,
-                            value=int(s.get("zugesprochener_anteil_prozent") or 0),
-                        )
-
-                    st.markdown("**Einwendungen des Beklagten**")
-                    einwendungen = s.get("einwendungen", {})
-                    new_einwendungen = {}
-                    ew_cols = st.columns(4)
-                    for i, defense in enumerate(DEFENSE_TYPES):
-                        with ew_cols[i % 4]:
-                            new_einwendungen[defense] = st.checkbox(
-                                DEFENSE_LABELS.get(defense, defense),
-                                value=einwendungen.get(defense, False),
-                                key=f"ew_{selected_case_id}_{defense}",
-                            )
+                    new_outcome = st.selectbox(
+                        "Urteilsergebnis (Outcome) *",
+                        [0, 1, 2],
+                        format_func=lambda x: f"{x} — {OUTCOME_LABELS[x]}",
+                        index=int(s.get("outcome") or 0),
+                    )
 
                     if st.form_submit_button("Änderungen speichern", type="primary"):
-                        updates = {
-                            "structured": {
-                                "datum": new_datum or None,
-                                "gericht": new_gericht or None,
-                                "instanz": new_instanz or None,
-                                "streitwert_eur": new_streitwert if new_streitwert > 0 else None,
-                                "anspruchsart": new_claim_type,
-                                "outcome": new_outcome,
-                                "zugesprochener_anteil_prozent": new_zugesprochener_anteil,
-                                "einwendungen": new_einwendungen,
-                            }
-                        }
+                        updates = {"structured": {"outcome": new_outcome}}
                         if dm.update_case(selected_case_id, updates):
                             st.success("Änderungen gespeichert.")
                             st.rerun()
-
-            # ── Display Structured Data ──────────────────────────────────────────
-            st.markdown("**Extrahierte Daten**")
-
-            col_d1, col_d2 = st.columns(2)
-
-            with col_d1:
-                st.markdown("**Anspruchsgrundlagen:**")
-                for ag in s.get("anspruchsgruende", []):
-                    st.markdown(f"  - {ag}")
-
-                st.markdown("**Kläger-Vorbringen (Zusammenfassung):**")
-                st.markdown(
-                    f"> {s.get('klaeger_anspruch_zusammenfassung', '—')}"
-                )
-
-                st.markdown("**Kläger-Beweismittel:**")
-                for bm in s.get("klaeger_beweismittel", []):
-                    st.markdown(f"  - {bm}")
-
-            with col_d2:
-                st.markdown("**Aktive Einwendungen:**")
-                einwendungen = s.get("einwendungen", {})
-                active_defenses = [
-                    DEFENSE_LABELS.get(d, d)
-                    for d in DEFENSE_TYPES
-                    if einwendungen.get(d)
-                ]
-                if active_defenses:
-                    for ad in active_defenses:
-                        st.markdown(f"  - {ad}")
-                else:
-                    st.markdown("  _Keine spezifischen Einwendungen_")
-
-                st.markdown("**Beklagten-Beweismittel:**")
-                for bm in s.get("beklagter_beweismittel", []):
-                    st.markdown(f"  - {bm}")
-
-                if s.get("sachverstaendiger_bestellt"):
-                    fachgebiet = s.get("sachverstaendigen_fachgebiet", "")
-                    st.info(f"Sachverständiger: {fachgebiet or 'Ja'}")
 
             # ── Extracted Sections ───────────────────────────────────────────────
             st.markdown("**Extrahierte Textabschnitte**")
@@ -981,95 +792,27 @@ with tab_manual:
         st.warning("OpenAI API Key erforderlich für Embedding-Generierung.")
 
     with st.form("manual_entry_form"):
-        st.markdown("**Grunddaten**")
-        m_col1, m_col2, m_col3 = st.columns(3)
+        m_col1, m_col2 = st.columns(2)
 
         with m_col1:
-            m_datum = st.text_input("Datum Ersturteil (YYYY-MM-DD)")
-            m_instanz = st.selectbox("Instanz des Erstgerichts", ["BG", "LG", "OLG", "OGH"])
-            m_streitwert = st.number_input("Streitwert (EUR)", min_value=0.0, step=100.0)
+            m_klaeger_vorbringen = st.text_area(
+                "Kläger-Vorbringen *",
+                placeholder="Beschreiben Sie das Vorbringen des Klägers...",
+                height=200,
+            )
 
         with m_col2:
-            m_claim_type = st.selectbox("Anspruchsart", CLAIM_TYPES + ["Andere"])
-            m_anspruchsgruende = st.text_area(
-                "Anspruchsgrundlagen (eine pro Zeile)",
-                placeholder="§ 1295 ABGB\n§ 922 ABGB\n§ 879 ABGB",
-                height=100,
-            )
-            m_outcome = st.selectbox(
-                "Urteilsergebnis *",
-                [0, 1, 2],
-                format_func=lambda x: f"{x} — {OUTCOME_LABELS[x]}",
-            )
-
-        with m_col3:
-            m_zugesprochener_anteil = st.slider("Zugesprochener Anteil (%)", 0, 100, 0)
-            m_kostenentscheidung = st.selectbox(
-                "Kostenentscheidung",
-                ["", "Kläger", "Beklagter", "Geteilt"],
-            )
-            m_sv_bestellt = st.checkbox("Sachverständiger bestellt")
-            if m_sv_bestellt:
-                m_sv_fachgebiet = st.text_input("Sachverständigen-Fachgebiet")
-            else:
-                m_sv_fachgebiet = None
-
-        st.markdown("**Textvorbringen**")
-        t_col1, t_col2 = st.columns(2)
-
-        with t_col1:
-            m_klaeger_vorbringen = st.text_area(
-                "Kläger-Vorbringen",
-                placeholder="Beschreiben Sie das Vorbringen des Klägers...",
-                height=150,
-            )
-            m_feststellungen = st.text_area(
-                "Feststellungen",
-                placeholder="Sachverhaltsfeststellungen des Gerichts...",
-                height=150,
-            )
-            m_rechtliche_beurteilung = st.text_area(
-                "Rechtliche Beurteilung",
-                placeholder="Rechtliche Beurteilung des Gerichts...",
-                height=150,
-            )
-
-        with t_col2:
             m_beklagter_vorbringen = st.text_area(
-                "Beklagten-Vorbringen",
+                "Beklagten-Vorbringen *",
                 placeholder="Beschreiben Sie das Vorbringen des Beklagten...",
-                height=150,
-            )
-            m_beweisw = st.text_area(
-                "Beweiswürdigung",
-                placeholder="Beweiswürdigung des Gerichts...",
-                height=150,
+                height=200,
             )
 
-        st.markdown("**Einwendungen**")
-        ew_cols = st.columns(4)
-        m_einwendungen = {}
-        for i, defense in enumerate(DEFENSE_TYPES):
-            with ew_cols[i % 4]:
-                m_einwendungen[defense] = st.checkbox(
-                    DEFENSE_LABELS.get(defense, defense),
-                    key=f"manual_ew_{defense}",
-                )
-
-        st.markdown("**Beweismittel**")
-        bm_col1, bm_col2 = st.columns(2)
-        with bm_col1:
-            m_klaeger_beweismittel = st.text_area(
-                "Kläger-Beweismittel (eine pro Zeile)",
-                placeholder="Urkunden\nZeugenaussage\nSachverständigengutachten",
-                height=80,
-            )
-        with bm_col2:
-            m_beklagter_beweismittel = st.text_area(
-                "Beklagten-Beweismittel (eine pro Zeile)",
-                placeholder="Gegenbeweise...",
-                height=80,
-            )
+        m_outcome = st.selectbox(
+            "Urteilsergebnis (Erstgericht) *",
+            [0, 1, 2],
+            format_func=lambda x: f"{x} — {OUTCOME_LABELS[x]}",
+        )
 
         submitted = st.form_submit_button(
             "Fall speichern und Embeddings generieren",
@@ -1083,37 +826,9 @@ with tab_manual:
             sections = {
                 "klaegervorbringen": m_klaeger_vorbringen,
                 "beklagtenvorbringen": m_beklagter_vorbringen,
-                "feststellungen": m_feststellungen,
-                "beweisw_rdigung": m_beweisw,
-                "rechtliche_beurteilung": m_rechtliche_beurteilung,
             }
 
-            structured = {
-                "datum": m_datum or None,
-                "instanz": m_instanz,
-                "gericht": None,
-                "streitwert_eur": m_streitwert if m_streitwert > 0 else None,
-                "streitwert_unbekannt": m_streitwert == 0,
-                "anspruchsart": m_claim_type,
-                "anspruchsgruende": [
-                    x.strip() for x in m_anspruchsgruende.splitlines() if x.strip()
-                ],
-                "klaeger_anspruch_zusammenfassung": m_klaeger_vorbringen[:200],
-                "beklagter_vorbringen_zusammenfassung": m_beklagter_vorbringen[:200],
-                "einwendungen": m_einwendungen,
-                "klaeger_beweismittel": [
-                    x.strip() for x in m_klaeger_beweismittel.splitlines() if x.strip()
-                ],
-                "beklagter_beweismittel": [
-                    x.strip() for x in m_beklagter_beweismittel.splitlines() if x.strip()
-                ],
-                "sachverstaendiger_bestellt": m_sv_bestellt,
-                "sachverstaendigen_fachgebiet": m_sv_fachgebiet,
-                "outcome": m_outcome,
-                "zugesprochener_anteil_prozent": m_zugesprochener_anteil,
-                "kostenentscheidung": m_kostenentscheidung or None,
-                "besonderheiten": [],
-            }
+            structured = {"outcome": m_outcome}
 
             with st.spinner("Generiere Embeddings..."):
                 try:

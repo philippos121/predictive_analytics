@@ -171,24 +171,26 @@ EMBEDDING_SECTION_LABELS = {
 # geometric structure (Johnson-Lindenstrauss) so classification remains possible.
 #
 # NO hidden fusion layer (fusion_dims=[]) — direct linear classification in the
-# attended random projection space.  This is essentially attended logistic regression
-# over 96 dims, making memorisation near-impossible with only 324 trainable params.
+# attended random projection space.  This is essentially attended logistic regression.
+# 32 dims was too lossy (destroyed signal). 128 dims preserves more structure
+# while keeping trainable params tiny (no memorisation possible).
+# Johnson-Lindenstrauss: ~112 dims needed to preserve pairwise distances for n=1000.
 #
-# Learnable parameter accounting (emb_out=32, freeze_encoders=True, fusion=[]):
-#   2 encoders:   FROZEN  (196 672 params, not trained)
-#   attention:    32×1 + 1                      =       33   ← learnable
-#   classifier:   (2+1)×32×3 + 3               =      291   ← learnable
+# Learnable parameter accounting (emb_out=128, freeze_encoders=True, fusion=[]):
+#   2 encoders:   FROZEN  (786 432 params, not trained)
+#   attention:    128×1 + 1                     =      129   ← learnable
+#   classifier:   (2+1)×128×3 + 3              =    1 155   ← learnable
 #   ──────────────────────────────────────────────────────────
-#   Total learnable                              ≈      324   (~0.43 params/example @ 750 training)
+#   Total learnable                              ≈    1 284   (~1.7 params/example @ 750 training)
 
 NN_CONFIG = {
-    "embedding_hidden_dim": 0,       # Single projection 3072 → 32
-    "embedding_output_dim": 32,      # larger: frozen projection needs more dims
+    "embedding_hidden_dim": 0,       # Single projection 3072 → 128
+    "embedding_output_dim": 128,     # 128 random dims preserve enough JL structure
     "embedding_noise_std": 0.0,      # no noise needed on frozen encoders
     "freeze_encoders": True,         # KEY: fixed random projection, only attention trained
     "use_section_attention": True,   # Attention over the 2 text sections
     "structured_dim": 0,             # No structured features
-    "fusion_dims": [],               # NO hidden layer — direct 96→3 linear classifier
+    "fusion_dims": [],               # NO hidden layer — direct 384→3 linear classifier
     "dropout_embedding": 0.0,        # frozen encoders cannot overfit
     "dropout_fusion": 0.0,           # no dropout needed on a linear classifier
     "num_classes": 3,

@@ -150,7 +150,6 @@ BEWEISMITTEL_TYPEN = [
 EMBEDDING_SECTIONS = [
     "klaegervorbringen",
     "beklagtenvorbringen",
-    "aufgenommene_beweise",
 ]
 
 EMBEDDING_SECTION_LABELS = {
@@ -162,26 +161,24 @@ EMBEDDING_SECTION_LABELS = {
 # ─── Neural Network Configuration ───────────────────────────────────────────────
 # text-embedding-3-large outputs 3072-dim vectors that are already highly semantic.
 # A SINGLE linear projection per section (embedding_hidden_dim = 0) keeps the
-# dominant parameter cost (3 × 3072 × emb_output_dim) small.
-# Non-linearity comes from GELU activations in the fusion MLP and struct encoder.
+# dominant parameter cost (2 × 3072 × emb_output_dim) small.
+# No structured features — embeddings only (klaeger + beklagter).
 #
-# Parameter accounting (emb_out=16, struct_enc=24, fusion=[64,32]):
-#   3 encoders:   3 × (3072×16 + 16)         =  147 504
-#   attention:    16 + 16                     =       32
-#   struct_enc:   40×24 + 24                  =      984   (40 structured features)
-#   fusion 1:     (4×16 + 24)×64 + 64        =    7 232
-#   fusion 2:     64×32 + 32                 =    2 080
-#   classifier:   32×3  + 3                  =       99
+# Parameter accounting (emb_out=8, fusion=[32]):
+#   2 encoders:   2 × (3072×8  + 8)           =   49 168
+#   attention:    8×1 + 1                      =        9
+#   fusion:       (2+1)×8×32  + 32             =      800
+#   classifier:   32×3 + 3                     =       99
 #   ──────────────────────────────────────────────────
-#   Total                                    ≈  157 931
+#   Total                                      ≈   50 076
 
 NN_CONFIG = {
-    "embedding_hidden_dim": 0,       # Single projection 3072 → 16 (no hidden layer)
-    "embedding_output_dim": 16,
+    "embedding_hidden_dim": 0,       # Single projection 3072 → 8 (no hidden layer)
+    "embedding_output_dim": 8,
     "embedding_noise_std": 0.02,
-    "use_section_attention": True,   # Attention over the 3 text sections
-    "struct_encoder_dim": 24,        # Structured branch: 40 → 24
-    "fusion_dims": [64, 32],         # fusion_input = (3+1)×16 + 24 = 88 → 64 → 32 → 3
+    "use_section_attention": True,   # Attention over the 2 text sections
+    "structured_dim": 0,             # No structured features
+    "fusion_dims": [32],             # fusion_input = (2+1)×8 = 24 → 32 → 3
     "dropout_embedding": 0.50,
     "dropout_fusion": 0.50,
     "num_classes": 3,

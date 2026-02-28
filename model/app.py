@@ -1466,17 +1466,12 @@ with tab_ev:
                         placeholder="Neues Gegenvorbringen, Einwendungen, Beweise…",
                         height=100,
                     )
-                new_beweise = st.text_area(
-                    "Aktualisierte Beweislage",
-                    placeholder="Neue Beweismittel, Sachverständigenaussagen…",
-                    height=70,
-                )
                 update_btn = st.form_submit_button(
                     "Vorhersage mit aktualisierten Texten berechnen",
                     type="primary",
                 )
 
-            if update_btn and (new_klaeger or new_beklagter or new_beweise):
+            if update_btn and (new_klaeger or new_beklagter):
                 with st.spinner("Re-Embedding + neue Vorhersage läuft…"):
                     try:
                         predictor = st.session_state.predictor
@@ -1484,7 +1479,6 @@ with tab_ev:
                             original_case_dict=st.session_state.prediction_case_dict,
                             new_klaeger_text=new_klaeger or None,
                             new_beklagter_text=new_beklagter or None,
-                            new_beweise_text=new_beweise or None,
                             api_key=st.session_state.openai_api_key,
                             original_embeddings=st.session_state.prediction_embeddings,
                         )

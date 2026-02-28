@@ -231,7 +231,6 @@ class LitigationPredictor:
         original_case_dict: dict,
         new_klaeger_text: Optional[str] = None,
         new_beklagter_text: Optional[str] = None,
-        new_beweise_text: Optional[str] = None,
         api_key: Optional[str] = None,
         original_embeddings: Optional[dict] = None,
     ) -> dict:
@@ -246,7 +245,6 @@ class LitigationPredictor:
             original_case_dict:  Ursprüngliche Falldaten (strukturiert)
             new_klaeger_text:    Aktualisiertes / ergänztes Kläger-Vorbringen
             new_beklagter_text:  Aktualisiertes Beklagten-Vorbringen / Gegenvorbringen
-            new_beweise_text:    Aktualisierte Beweise
             api_key:             OpenAI API-Key für Embedding
             original_embeddings: Embeddings aus der ursprünglichen Vorhersage
                                   (unveränderte Sektionen werden daraus übernommen)
@@ -259,8 +257,6 @@ class LitigationPredictor:
             new_sections["klaegervorbringen"] = new_klaeger_text
         if new_beklagter_text:
             new_sections["beklagtenvorbringen"] = new_beklagter_text
-        if new_beweise_text:
-            new_sections["aufgenommene_beweise"] = new_beweise_text
 
         # Re-embed nur die geänderten Sektionen
         new_embeddings = {}

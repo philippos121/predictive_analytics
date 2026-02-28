@@ -198,22 +198,25 @@ class LitigationTrainer:
         # ── Data Preparation ─────────────────────────────────────────────────────
         self._log(phase="preparing", message="Daten werden vorbereitet...")
 
-        # Fit feature engineer on all labeled cases so the scaler is ready
-        # before the dataset is created. Fitting on all cases (not just train
-        # split) introduces negligible contamination for StandardScaler over
-        # ~40 features and avoids a chicken-and-egg split dependency.
-        labeled_for_scaler = [
-            c for c in cases
-            if c["structured"].get("outcome") is not None
-            and c["case_id"] in embeddings_dict
-        ]
-        self.feature_engineer.fit_transform(labeled_for_scaler)
-        structured_dim = self.feature_engineer.feature_dim
+        # Only fit and use structured features when the config asks for them.
+        use_struct = active_nn_config.get("structured_dim", 0) > 0
+        if use_struct:
+            labeled_for_scaler = [
+                c for c in cases
+                if c["structured"].get("outcome") is not None
+                and c["case_id"] in embeddings_dict
+            ]
+            self.feature_engineer.fit_transform(labeled_for_scaler)
+            structured_dim = self.feature_engineer.feature_dim
+            active_nn_config = {**active_nn_config, "structured_dim": structured_dim}
 
-        # Inject structured_dim so the model builds the right fusion layer
-        active_nn_config = {**active_nn_config, "structured_dim": structured_dim}
-
-        train_ds, val_ds, full_ds = self.prepare_data(cases, embeddings_dict)
+        train_ds, val_ds, full_ds = prepare_dataset(
+            cases,
+            embeddings_dict,
+            val_split=self.config["val_split"],
+            random_seed=self.config["random_seed"],
+            feature_engineer=self.feature_engineer if use_struct else None,
+        )
 
         self._log(
             phase="prepared",
@@ -540,7 +543,8 @@ class LitigationTrainer:
         if self.model is None:
             raise RuntimeError("Model not trained/loaded.")
 
-        full_ds = LitigationDataset(cases, embeddings_dict, feature_engineer=self.feature_engineer)
+        fe = self.feature_engineer if getattr(self.model, "structured_dim", 0) > 0 else None
+        full_ds = LitigationDataset(cases, embeddings_dict, feature_engineer=fe)
         loader = DataLoader(
             full_ds, batch_size=32, shuffle=False, collate_fn=collate_fn
         )

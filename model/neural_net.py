@@ -2,8 +2,8 @@
 Neural Network Architecture for Predictive Litigation Analytics.
 
 Embedding-only architecture:
-1. Text embeddings (n sections × 3072-dim) via per-section encoders
-   - klaegervorbringen, beklagtenvorbringen, aufgenommene_beweise
+1. Text embeddings (2 sections × 3072-dim) via per-section encoders
+   - klaegervorbringen, beklagtenvorbringen
 2. Optional cross-section attention (SectionAttention) to weight sections
 3. Flat fusion MLP for final classification
 
@@ -103,8 +103,8 @@ class SectionAttention(nn.Module):
     """
     Learnable attention weights over the encoded text sections.
 
-    Instead of treating klaegervorbringen, beklagtenvorbringen, and
-    aufgenommene_beweise as equally important, this module learns which
+    Instead of treating klaegervorbringen and beklagtenvorbringen as
+    equally important, this module learns which
     section is most predictive for each case.  The output is an attended
     summary vector concatenated alongside the per-section encodings in
     the fusion step, giving the model both the raw detail and the
@@ -134,11 +134,11 @@ class LitigationClassifier(nn.Module):
     """
     Main classification model for Austrian civil case outcome prediction.
 
-    Architecture (3-tier adaptive):
-    - n EmbeddingEncoders (one per text section):
-        klaegervorbringen, beklagtenvorbringen, aufgenommene_beweise
+    Architecture:
+    - 2 EmbeddingEncoders (one per text section):
+        klaegervorbringen, beklagtenvorbringen
     - Optional SectionAttention (learnable weights over sections)
-    - Optional structured feature branch (claim type, defense flags, Streitwert, etc.)
+    - Optional structured feature branch (disabled when structured_dim=0)
     - Flat fusion MLP
     - 3-class output (0=Unterliegen, 1=Teilweise, 2=Obsiegen)
     """

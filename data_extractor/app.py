@@ -18,7 +18,6 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-from streamlit_extras.metric_cards import style_metric_cards
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
@@ -586,7 +585,6 @@ with tab_dataset:
         col2.metric("Beschriftet", stats["labeled_cases"])
         col3.metric("Obsiegen", stats["outcome_distribution"]["obsiegen"])
         col4.metric("Unterliegen", stats["outcome_distribution"]["unterliegen"])
-        style_metric_cards()
 
         st.divider()
 

@@ -407,7 +407,7 @@ with tab_extract:
                         n_workers = st.number_input(
                             "Parallele Workers",
                             min_value=1,
-                            max_value=20,
+                            max_value=100,
                             value=PARALLEL_WORKERS,
                             step=1,
                             help="Anzahl gleichzeitig verarbeiteter OGH-Urteile. "

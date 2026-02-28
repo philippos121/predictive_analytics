@@ -177,7 +177,7 @@ class LitigationClassifier(nn.Module):
         self.structured_dim = config.get("structured_dim", 0)
         struct_encoded_dim = 0
         if self.structured_dim > 0:
-            struct_hidden = 32
+            struct_hidden = config.get("struct_encoder_dim", 16)
             self.struct_encoder = nn.Sequential(
                 nn.Linear(self.structured_dim, struct_hidden),
                 nn.LayerNorm(struct_hidden),
@@ -278,6 +278,7 @@ class LitigationClassifier(nn.Module):
             "embedding_dim_output": self.config["embedding_output_dim"],
             "use_section_attention": self.use_section_attention,
             "structured_dim": self.structured_dim,
+            "struct_encoder_dim": self.config.get("struct_encoder_dim", 16),
             "fusion_dims": self.config["fusion_dims"],
             "num_classes": self.config["num_classes"],
         }

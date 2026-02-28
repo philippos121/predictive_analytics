@@ -169,45 +169,60 @@ NN_MEDIUM_THRESHOLD = 600
 
 # ─── Neural Network Configurations ──────────────────────────────────────────────
 # text-embedding-3-large outputs 3072-dim vectors that are already highly semantic.
-# The first projection layer (3072 → hidden_dim) dominates parameter count, so
-# we keep hidden_dim fixed across tiers and instead scale depth + regularization.
+# The dominant cost is the first projection layer: 3 × 3072 × emb_output_dim.
+# With ~1 000 cases the model must be SMALL — approximate parameter budgets:
 #
-# fusion_input with SectionAttention = (n_sections + 1) × emb_output_dim
-#   = (3 + 1) × 128 = 512  (attention adds one extra attended summary vector)
+#   Small  (50–149 cases)  →  ~25 K params
+#   Medium (150–599 cases) →  ~75 K params
+#   Large  (≥ 600 cases)   → ~150 K params
 #
-# Small  (50–149 cases)   — no attention, mild dropout, 2-layer encoder
-# Medium (150–599 cases)  — attention, moderate dropout, 2-layer encoder
-# Large  (≥ 600 cases)    — attention, heavy dropout, single-layer encoder + noise
+# All tiers use a SINGLE linear projection (hidden_dim = 0): 3072 → emb_output_dim.
+# Non-linearity comes from GELU activations in the fusion MLP and struct encoder.
+# struct_encoder_dim: bottleneck for the structured-feature branch (→ fusion).
+#
+# Parameter accounting for LARGE (emb_out=16, struct_enc=24, fusion=[64,32]):
+#   3 encoders:   3 × (3072×16 + 16)         =  147 504
+#   attention:    16 + 16                     =       32   (bias + weight)
+#   struct_enc:   40×24 + 24                  =      984
+#   fusion 1:     (4×16 + 24)×64 + 64        =    7 232
+#   fusion 2:     64×32 + 32                 =    2 080
+#   classifier:   32×3  + 3                  =       99
+#   ──────────────────────────────────────────────────
+#   Total                                    ≈  158 000
 
-NN_CONFIG = {                        # Small / backward-compatible default
-    "embedding_hidden_dim": 256,     # Two-layer: 3072 → 256 → 128
-    "embedding_output_dim": 128,
-    "use_section_attention": False,  # Off for small datasets (avoid overfitting)
-    "fusion_dims": [256, 128],       # fusion_input = 3×128 = 384 → 256 → 128 → 3
-    "dropout_embedding": 0.30,
-    "dropout_fusion": 0.30,
+NN_CONFIG = {                        # Small (50–149 cases) — ~25 K params
+    "embedding_hidden_dim": 0,       # Single projection 3072 → 4
+    "embedding_output_dim": 4,
+    "embedding_noise_std": 0.01,
+    "use_section_attention": False,  # Off — too few cases to learn attention reliably
+    "struct_encoder_dim": 8,         # structured branch: 40 → 8
+    "fusion_dims": [16],             # fusion_input = 3×4 + 8 = 20 → 16 → 3
+    "dropout_embedding": 0.35,
+    "dropout_fusion": 0.35,
     "num_classes": 3,
 }
 
-NN_CONFIG_MEDIUM = {                 # Medium: two-layer encoder + attention, moderate dropout
-    "embedding_hidden_dim": 128,     # 3072 → 128 → 128; 50 % fewer first-layer params vs 256
-    "embedding_output_dim": 128,
-    "embedding_noise_std": 0.01,     # Light Gaussian noise on embeddings
+NN_CONFIG_MEDIUM = {                 # Medium (150–599 cases) — ~75 K params
+    "embedding_hidden_dim": 0,       # Single projection 3072 → 8
+    "embedding_output_dim": 8,
+    "embedding_noise_std": 0.02,
     "use_section_attention": True,   # Attention over the 3 text sections
-    "fusion_dims": [256, 128],       # fusion_input = (3+1)×128 = 512 → 256 → 128 → 3
-    "dropout_embedding": 0.40,
-    "dropout_fusion": 0.40,
+    "struct_encoder_dim": 16,        # structured branch: 40 → 16
+    "fusion_dims": [32, 16],         # fusion_input = (3+1)×8 + 16 = 48 → 32 → 16 → 3
+    "dropout_embedding": 0.45,
+    "dropout_fusion": 0.45,
     "num_classes": 3,
 }
 
-NN_CONFIG_LARGE = {                  # Large: single-layer encoder + attention + noise, heavy dropout
-    "embedding_hidden_dim": 0,       # Single projection 3072 → 64; −75 % vs two-layer-128
-    "embedding_output_dim": 64,      # Reduced from 128 → cuts encoder params ~2×, fights overfit
-    "embedding_noise_std": 0.02,     # Gaussian noise (strong regularization)
+NN_CONFIG_LARGE = {                  # Large (≥ 600 cases) — ~150 K params
+    "embedding_hidden_dim": 0,       # Single projection 3072 → 16
+    "embedding_output_dim": 16,
+    "embedding_noise_std": 0.02,
     "use_section_attention": True,   # Attention over the 3 text sections
-    "fusion_dims": [128, 64],        # fusion_input = (3+1)×64 = 256 → 128 → 64 → 3
+    "struct_encoder_dim": 24,        # structured branch: 40 → 24
+    "fusion_dims": [64, 32],         # fusion_input = (3+1)×16 + 24 = 88 → 64 → 32 → 3
     "dropout_embedding": 0.50,
-    "dropout_fusion": 0.50,          # Increased from 0.45 for stronger fusion regularization
+    "dropout_fusion": 0.50,
     "num_classes": 3,
 }
 

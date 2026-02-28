@@ -48,7 +48,7 @@ OPENAI_RETRY_DELAY_SEC = 2.0
 # Number of parallel extraction workers (each worker = 1 OGH-Urteil gleichzeitig).
 # Embeddings within each file are always parallelized (3 calls gleichzeitig).
 # Empfehlung: 5 Workers bei Tier-1 OpenAI-Account (10k RPM).
-PARALLEL_WORKERS = 5
+PARALLEL_WORKERS = 500
 
 # ─── Outcome Labels ─────────────────────────────────────────────────────────────
 OUTCOME_LABELS = {

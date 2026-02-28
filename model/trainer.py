@@ -33,7 +33,7 @@ from model.feature_engineer import (
     prepare_dataset,
 )
 from model.knn_predictor import KNNLitigationPredictor
-from model.neural_net import FocalLoss, LitigationClassifier
+from model.neural_net import OrdinalBCELoss, LitigationClassifier
 
 
 class EarlyStopping:
@@ -257,11 +257,9 @@ class LitigationTrainer:
         )
 
         class_weights = compute_class_weights(cases).to(self.device)
-        criterion = FocalLoss(
-            gamma=2.0,
-            alpha=class_weights,
+        criterion = OrdinalBCELoss(
+            class_weights=class_weights,
             label_smoothing=_label_smoothing,
-            num_classes=NN_CONFIG["num_classes"],
         )
 
         optimizer = torch.optim.AdamW(
@@ -328,7 +326,7 @@ class LitigationTrainer:
                     mixed_emb, mixed_struct, labels_a, labels_b, lam = _mixup_batch(
                         emb_batch, struct_batch, label_batch, _mixup_alpha
                     )
-                    logits, _ = model(mixed_emb, mixed_struct)
+                    logits, probs = model(mixed_emb, mixed_struct)
                     loss = (
                         lam * criterion(logits, labels_a)
                         + (1.0 - lam) * criterion(logits, labels_b)
@@ -336,7 +334,7 @@ class LitigationTrainer:
                     # Accuracy tracked against the dominant (higher-weight) label
                     ref_labels = labels_a if lam >= 0.5 else labels_b
                 else:
-                    logits, _ = model(emb_batch, struct_batch)
+                    logits, probs = model(emb_batch, struct_batch)
                     loss = criterion(logits, label_batch)
                     ref_labels = label_batch
 
@@ -349,7 +347,7 @@ class LitigationTrainer:
                 optimizer.step()
 
                 train_loss += loss.item() * len(label_batch)
-                preds = logits.argmax(dim=-1)
+                preds = probs.argmax(dim=-1)
                 train_correct += (preds == ref_labels).sum().item()
                 train_total += len(label_batch)
 
@@ -540,11 +538,11 @@ class LitigationTrainer:
                 struct_batch = struct_batch.to(self.device)
                 label_batch = label_batch.to(self.device)
 
-                logits, _ = model(emb_batch, struct_batch)
+                logits, probs = model(emb_batch, struct_batch)
                 loss = criterion(logits, label_batch)
 
                 total_loss += loss.item() * len(label_batch)
-                preds = logits.argmax(dim=-1)
+                preds = probs.argmax(dim=-1)
                 correct += (preds == label_batch).sum().item()
                 total += len(label_batch)
 
@@ -578,7 +576,7 @@ class LitigationTrainer:
                 struct_batch = struct_batch.to(self.device)
 
                 logits, probs = self.model(emb_batch, struct_batch)
-                preds = logits.argmax(dim=-1)
+                preds = probs.argmax(dim=-1)
 
                 all_preds.extend(preds.cpu().numpy())
                 all_labels.extend(label_batch.numpy())

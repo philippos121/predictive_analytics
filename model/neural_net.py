@@ -225,7 +225,10 @@ class LitigationClassifier(nn.Module):
             prev_dim = dim
 
         self.fusion = nn.Sequential(*layers)
-        self.classifier = nn.Linear(prev_dim, num_classes)
+        # Ordinal output: two cumulative threshold logits for P(≥1) and P(≥2).
+        # Unterliegen↔Obsiegen errors violate both thresholds; adjacent errors
+        # violate only one — the loss naturally penalises larger ordinal mistakes more.
+        self.classifier = nn.Linear(prev_dim, num_classes - 1)
 
         # Initialize weights
         self._init_weights()
@@ -282,12 +285,18 @@ class LitigationClassifier(nn.Module):
             struct_encoded = self.struct_encoder(struct_features)  # (batch, 32)
             section_concat = torch.cat([section_concat, struct_encoded], dim=-1)
 
-        # Fuse and classify
+        # Fuse and classify (ordinal cumulative thresholds)
         fused = self.fusion(section_concat)
-        logits = self.classifier(fused)
-        probs = F.softmax(logits, dim=-1)
+        threshold_logits = self.classifier(fused)          # (batch, 2)
+        p_geq1 = torch.sigmoid(threshold_logits[:, 0])    # P(outcome ≥ 1)
+        p_geq2 = torch.sigmoid(threshold_logits[:, 1])    # P(outcome ≥ 2)
+        probs = torch.stack([
+            1.0 - p_geq1,                                 # P(Unterliegen)
+            (p_geq1 - p_geq2).clamp(min=0.0),            # P(Teilweise)
+            p_geq2,                                        # P(Obsiegen)
+        ], dim=-1)
 
-        return logits, probs
+        return threshold_logits, probs
 
     def predict_proba(
         self,
@@ -317,56 +326,66 @@ class LitigationClassifier(nn.Module):
         }
 
 
-class FocalLoss(nn.Module):
+class OrdinalBCELoss(nn.Module):
     """
-    Focal Loss for handling class imbalance in litigation outcomes.
-    Focuses training on hard examples.
+    Ordinal regression loss for 3-class ordered litigation outcomes.
 
-    label_smoothing > 0 prevents overconfident predictions — useful for
-    small legal datasets where ground-truth labels carry inherent uncertainty.
-    Focal weighting is still computed on hard targets for correct emphasis.
+    Models two cumulative binary classifiers:
+      P(outcome ≥ 1) — Teilweise or Obsiegen vs Unterliegen
+      P(outcome ≥ 2) — Obsiegen vs anything below
+
+    This encodes Unterliegen < Teilweise < Obsiegen directly in the loss:
+    a Unterliegen↔Obsiegen confusion violates BOTH thresholds and incurs
+    double the penalty of an adjacent error (Unterliegen↔Teilweise).
+
+    class_weights (3,): inverse-frequency weights → converted to per-threshold
+    pos_weight via class count ratios, so class imbalance is rebalanced
+    correctly in the binary BCE setting.
+
+    label_smoothing: soft binary targets (0→ε/2, 1→1-ε/2) to prevent
+    overconfident threshold predictions on uncertain legal outcomes.
     """
 
     def __init__(
         self,
-        gamma: float = 2.0,
-        alpha: torch.Tensor = None,
+        class_weights: torch.Tensor = None,
         label_smoothing: float = 0.0,
-        num_classes: int = 3,
+        num_classes: int = 3,   # kept for call-site compatibility
     ):
         super().__init__()
-        self.gamma = gamma
-        self.alpha = alpha
         self.label_smoothing = label_smoothing
-        self.num_classes = num_classes
 
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        num_classes = logits.size(-1)
-
-        # pt must be the raw softmax probability of the true class (Lin et al. 2017).
-        # Passing class weights into the CE used to derive pt distorts the focal
-        # weight: an under-represented class gets inflated CE → artificially low pt
-        # → higher focal weight regardless of actual model confidence.
-        # alpha_t is applied as a separate multiplicative factor after pt is fixed.
-        ce_hard = F.cross_entropy(logits, targets, reduction="none")  # unweighted
-        pt = torch.exp(-ce_hard)
-        focal_weight = (1 - pt) ** self.gamma
-
-        # Per-sample class weight for the true class
-        alpha_t = self.alpha[targets] if self.alpha is not None else logits.new_ones(len(targets))
-
-        if self.label_smoothing > 0.0:
-            # Build soft targets: (1 - ε) * one_hot + ε / K
-            with torch.no_grad():
-                smooth_val = self.label_smoothing / num_classes
-                soft_targets = torch.full_like(logits, smooth_val)
-                soft_targets.scatter_(
-                    1,
-                    targets.unsqueeze(1),
-                    1.0 - self.label_smoothing + smooth_val,
-                )
-            log_probs = F.log_softmax(logits, dim=-1)
-            ce_smooth = -(soft_targets * log_probs).sum(dim=-1)   # (batch,)
-            return (alpha_t * focal_weight * ce_smooth).mean()
+        if class_weights is not None:
+            # inv_w ∝ class counts  (class_weights = total / (K * count_i))
+            inv_w = 1.0 / class_weights.float()
+            # Threshold 0: negative = class 0, positive = classes 1+2
+            pw0 = (inv_w[0] / (inv_w[1] + inv_w[2])).reshape(1)
+            # Threshold 1: negative = classes 0+1, positive = class 2
+            pw1 = ((inv_w[0] + inv_w[1]) / inv_w[2]).reshape(1)
+            self.register_buffer("pos_weight_0", pw0)
+            self.register_buffer("pos_weight_1", pw1)
         else:
-            return (alpha_t * focal_weight * ce_hard).mean()
+            self.pos_weight_0 = None
+            self.pos_weight_1 = None
+
+    def forward(self, threshold_logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            threshold_logits: (batch, 2)  logit for P(≥1) and P(≥2)
+            targets: (batch,)  class indices 0, 1, 2
+        """
+        eps = self.label_smoothing / 2
+        t0 = (targets >= 1).float()    # positive for classes 1 and 2
+        t1 = (targets >= 2).float()    # positive for class 2 only
+
+        if eps > 0:                    # soft binary targets
+            t0 = t0 * (1.0 - self.label_smoothing) + eps
+            t1 = t1 * (1.0 - self.label_smoothing) + eps
+
+        loss0 = F.binary_cross_entropy_with_logits(
+            threshold_logits[:, 0], t0, pos_weight=self.pos_weight_0,
+        )
+        loss1 = F.binary_cross_entropy_with_logits(
+            threshold_logits[:, 1], t1, pos_weight=self.pos_weight_1,
+        )
+        return (loss0 + loss1) / 2

@@ -172,15 +172,17 @@ EMBEDDING_SECTION_LABELS = {
 #   The scalar SectionAttention alone only weights globally; diff/prod let the
 #   fusion head see the *relative* semantic positions per case.
 #
-# Parameter budget  (emb_out=128, interaction=True, fusion=[256,128]):
-#   2 encoders:   2 × (3072×128 + 128)             =  786 688   ← learned
+# Parameter budget  (emb_hidden=256, emb_out=128, interaction=True, fusion=[256,128]):
+#   2 encoders:   2 × (3072×256+256 + 256×128+128)  = 1 639 168  ← learned (2-layer)
+#                   first step  3072→256 : 12× compression (was 24×)
+#                   second step  256→128 : nonlinear selective refinement
 #   interaction:  0  (diff + prod computed, not learned)
 #   attention:    128×1 + 1                          =      129   ← learned
 #   fusion:       640×256+256 + LN(256)              =  165 120   ← learned
 #                 256×128+128 + LN(128)              =   33 152   ← learned
 #   classifier:   128×3 + 3                          =      387   ← learned
 #   ──────────────────────────────────────────────────────────────
-#   Total                                             ≈  985 476   (~123 params/example @ 8 000 training)
+#   Total                                             ≈ 1 837 956  (~230 params/example @ 8 000 training)
 #
 # Fusion input breakdown:
 #   kl_enc(128) + bk_enc(128) + diff(128) + prod(128) + attended(128) = 640
@@ -192,7 +194,7 @@ EMBEDDING_SECTION_LABELS = {
 #   • weight_decay 1e-3, label_smoothing 0.1, mixup 0.3, SWA (last 40 % epochs)
 
 NN_CONFIG = {
-    "embedding_hidden_dim": 0,           # single-layer encoder: 3072 → 128
+    "embedding_hidden_dim": 256,         # two-layer encoder: 3072 → 256 → 128
     "embedding_output_dim": 128,         # learned — finds class-relevant directions
     "embedding_noise_std": 0.01,         # light Gaussian noise on raw embeddings
     "freeze_encoders": False,            # LEARNED projection (needs 7 500+ training cases)

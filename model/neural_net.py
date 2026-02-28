@@ -343,6 +343,18 @@ class FocalLoss(nn.Module):
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         num_classes = logits.size(-1)
 
+        # pt must be the raw softmax probability of the true class (Lin et al. 2017).
+        # Passing class weights into the CE used to derive pt distorts the focal
+        # weight: an under-represented class gets inflated CE → artificially low pt
+        # → higher focal weight regardless of actual model confidence.
+        # alpha_t is applied as a separate multiplicative factor after pt is fixed.
+        ce_hard = F.cross_entropy(logits, targets, reduction="none")  # unweighted
+        pt = torch.exp(-ce_hard)
+        focal_weight = (1 - pt) ** self.gamma
+
+        # Per-sample class weight for the true class
+        alpha_t = self.alpha[targets] if self.alpha is not None else logits.new_ones(len(targets))
+
         if self.label_smoothing > 0.0:
             # Build soft targets: (1 - ε) * one_hot + ε / K
             with torch.no_grad():
@@ -355,15 +367,6 @@ class FocalLoss(nn.Module):
                 )
             log_probs = F.log_softmax(logits, dim=-1)
             ce_smooth = -(soft_targets * log_probs).sum(dim=-1)   # (batch,)
-
-            # Focal weight still based on hard targets for correct emphasis
-            ce_hard = F.cross_entropy(logits, targets, weight=self.alpha, reduction="none")
-            pt = torch.exp(-ce_hard)
-            focal_weight = (1 - pt) ** self.gamma
-
-            return (focal_weight * ce_smooth).mean()
+            return (alpha_t * focal_weight * ce_smooth).mean()
         else:
-            ce_loss = F.cross_entropy(logits, targets, weight=self.alpha, reduction="none")
-            pt = torch.exp(-ce_loss)
-            focal_loss = ((1 - pt) ** self.gamma) * ce_loss
-            return focal_loss.mean()
+            return (alpha_t * focal_weight * ce_hard).mean()

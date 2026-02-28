@@ -295,7 +295,10 @@ class LitigationTrainer:
         # snapshots.  Early stopping handles the stopping criterion instead.
         use_swa = effective_config.get("use_swa", True)
         swa_start = max(1, int(effective_config["epochs"] * 0.60))
-        swa_snapshots: list[dict] = []   # state_dicts collected after swa_start
+        # Online Welford mean — one buffer (~7 MB) instead of storing every snapshot
+        # (~880 MB for 120 epochs at 1.84 M params).
+        swa_n = 0
+        swa_state: dict = {}
 
         early_stopping = EarlyStopping(
             patience=effective_config["early_stopping_patience"]
@@ -360,11 +363,15 @@ class LitigationTrainer:
             monitor_loss = val_loss if val_loader else avg_train_loss
             scheduler.step()
 
-            # SWA snapshot collection
+            # SWA: online Welford mean — O(1) memory regardless of window length
             if use_swa and epoch >= swa_start:
-                swa_snapshots.append(
-                    {k: v.clone().cpu() for k, v in model.state_dict().items()}
-                )
+                swa_n += 1
+                for k, v in model.state_dict().items():
+                    cpu_v = v.detach().cpu().float()
+                    if swa_n == 1:
+                        swa_state[k] = cpu_v
+                    else:
+                        swa_state[k].add_((cpu_v - swa_state[k]) / swa_n)
 
             # Track history
             self.history["train_loss"].append(avg_train_loss)
@@ -406,19 +413,15 @@ class LitigationTrainer:
                 )
                 break
 
-        # ── SWA: average snapshots and re-evaluate ────────────────────────────────
-        if use_swa and swa_snapshots:
-            avg_state: dict = {}
-            for key in swa_snapshots[0]:
-                avg_state[key] = torch.stack(
-                    [s[key].float() for s in swa_snapshots]
-                ).mean(0).to(self.device)
+        # ── SWA: load the online mean and re-evaluate ─────────────────────────────
+        if use_swa and swa_n > 0:
+            avg_state = {k: v.to(self.device) for k, v in swa_state.items()}
             model.load_state_dict(avg_state)
 
             swa_val_loss, swa_val_acc = self._evaluate(model, val_loader, criterion)
             self._log(
                 phase="swa_done",
-                n_snapshots=len(swa_snapshots),
+                n_snapshots=swa_n,
                 swa_val_acc=swa_val_acc,
                 prev_best_val_acc=best_val_acc,
             )

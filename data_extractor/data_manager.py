@@ -193,17 +193,6 @@ class DataManager:
         labeled = [c for c in cases if c["structured"].get("outcome") is not None]
         outcomes = [c["structured"]["outcome"] for c in labeled]
 
-        streitwerte = [
-            c["structured"].get("streitwert_eur")
-            for c in cases
-            if c["structured"].get("streitwert_eur") is not None
-        ]
-
-        claim_types = {}
-        for c in cases:
-            ct = c["structured"].get("anspruchsart", "Unbekannt")
-            claim_types[ct] = claim_types.get(ct, 0) + 1
-
         return {
             "total_cases": len(cases),
             "labeled_cases": len(labeled),
@@ -212,13 +201,6 @@ class DataManager:
                 "unterliegen": outcomes.count(0),
                 "teilweise": outcomes.count(1),
                 "obsiegen": outcomes.count(2),
-            },
-            "claim_type_distribution": claim_types,
-            "streitwert_stats": {
-                "min": float(min(streitwerte)) if streitwerte else None,
-                "max": float(max(streitwerte)) if streitwerte else None,
-                "mean": float(np.mean(streitwerte)) if streitwerte else None,
-                "median": float(np.median(streitwerte)) if streitwerte else None,
             },
         }
 

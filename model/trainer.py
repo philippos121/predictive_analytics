@@ -257,9 +257,11 @@ class LitigationTrainer:
         )
 
         class_weights = compute_class_weights(cases).to(self.device)
-        criterion = nn.CrossEntropyLoss(
-            weight=class_weights,
+        criterion = FocalLoss(
+            gamma=2.0,
+            alpha=class_weights,
             label_smoothing=_label_smoothing,
+            num_classes=NN_CONFIG["num_classes"],
         )
 
         optimizer = torch.optim.AdamW(
@@ -268,10 +270,23 @@ class LitigationTrainer:
             weight_decay=effective_config["weight_decay"],
         )
 
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        # 10-epoch linear warmup → cosine decay.
+        # Warmup stabilises the freshly-initialised 3072→256 first-layer weights
+        # (large gradients in epoch 1 otherwise push the encoder into a poor basin).
+        _warmup_epochs = 10
+        _cosine_epochs = max(1, effective_config["epochs"] - _warmup_epochs)
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
             optimizer,
-            T_max=effective_config["epochs"],
-            eta_min=1e-7,
+            schedulers=[
+                torch.optim.lr_scheduler.LinearLR(
+                    optimizer, start_factor=0.1, end_factor=1.0,
+                    total_iters=_warmup_epochs,
+                ),
+                torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer, T_max=_cosine_epochs, eta_min=1e-7,
+                ),
+            ],
+            milestones=[_warmup_epochs],
         )
 
         # Stochastic Weight Averaging over the last 40 % of epochs.

@@ -22,6 +22,7 @@ from sklearn.preprocessing import StandardScaler
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
+    BEWEISMITTEL_TYPEN,
     CLAIM_TYPES,
     DEFENSE_TYPES,
     EMBEDDING_DIM,
@@ -29,6 +30,7 @@ from config import (
     ENCODER_FILE,
     SCALER_FILE,
     TRAINING_CONFIG,
+    VERFAHRENSARTEN,
 )
 
 
@@ -36,17 +38,26 @@ class FeatureEngineer:
     """
     Transforms case metadata into numeric feature vectors.
 
-    Structured features include:
-    - log(streitwert) — normalized  [1]
-    - claim_type — one-hot          [len(CLAIM_TYPES)+1]
-    - defense flags                 [len(DEFENSE_TYPES)]
-    - plaintiff_evidence_count      [1]
-    - defendant_evidence_count      [1]
-    - legal_basis_count             [1]
-    - court_level                   [4] (BG/LG/OLG/OGH one-hot, bei OGH-Datenbasis = Erstgericht)
-    - sachverstaendiger             [1]
-    ─────────────────────────────────────────────────────
-    Total: 1 + (len(CLAIM_TYPES)+1) + len(DEFENSE_TYPES) + 1 + 1 + 1 + 4 + 1 = varies
+    Only features knowable at the START of proceedings are included
+    (Klage + Klagebeantwortung stage). Features that only emerge during
+    or after trial (verfahrensdauer, anzahl_verhandlungen, sachverstaendiger)
+    are excluded to avoid future leakage.
+
+    Features:
+    - log(streitwert) + unknown-flag        [2]
+    - claim_type one-hot                    [len(CLAIM_TYPES)+1]
+    - defense flags                         [len(DEFENSE_TYPES)]
+    - anzahl_einwendungen                   [1]  (derived count)
+    - widerklage                            [1]
+    - verfahrensart one-hot                 [len(VERFAHRENSARTEN)+1]
+    - court_level one-hot                   [4]
+    - plaintiff/defendant evidence counts   [2]
+    - evidence type breakdown (×2 parties)  [len(BEWEISMITTEL_TYPEN) × 2]
+    - legal_basis_count                     [1]
+    ─────────────────────────────────────────────────────────────────
+    Total: 2 + (len(CLAIM_TYPES)+1) + len(DEFENSE_TYPES) + 1 + 1
+           + (len(VERFAHRENSARTEN)+1) + 4 + 2
+           + len(BEWEISMITTEL_TYPEN)*2 + 1  =  varies
     """
 
     # Österreichische Gerichtsinstanzen: Bezirksgericht, Landesgericht, OLG, OGH
@@ -66,74 +77,90 @@ class FeatureEngineer:
 
     def _compute_feature_dim(self) -> int:
         n = 0
-        n += 1                          # log_streitwert
-        n += 1                          # streitwert_unbekannt flag
-        n += len(CLAIM_TYPES) + 1       # claim_type one-hot (+1 for "other")
-        n += len(DEFENSE_TYPES)         # defense flags
-        n += 1                          # klaeger_beweismittel count
-        n += 1                          # beklagter_beweismittel count
-        n += 1                          # anspruchsgruende count
-        n += len(self.INSTANZ_CLASSES)  # court level one-hot
-        n += 1                          # sachverstaendiger
-        n += 1                          # verfahrensdauer_monate (log)
-        n += 1                          # anzahl_verhandlungen (log)
+        n += 1                              # log_streitwert
+        n += 1                              # streitwert_unbekannt flag
+        n += len(CLAIM_TYPES) + 1           # claim_type one-hot (+1 for "Andere")
+        n += len(DEFENSE_TYPES)             # defense flags (12)
+        n += 1                              # anzahl_einwendungen (derived count)
+        n += 1                              # widerklage
+        n += len(VERFAHRENSARTEN) + 1       # verfahrensart one-hot (+1 for unknown)
+        n += len(self.INSTANZ_CLASSES)      # court level one-hot (BG/LG/OLG/OGH)
+        n += 1                              # klaeger_beweismittel count (total)
+        n += 1                              # beklagter_beweismittel count (total)
+        n += len(BEWEISMITTEL_TYPEN)        # evidence type breakdown — Kläger
+        n += len(BEWEISMITTEL_TYPEN)        # evidence type breakdown — Beklagter
+        n += 1                              # anspruchsgruende count
         return n
 
     def encode_case(self, case: dict) -> np.ndarray:
         """
         Encode a single case's structured data to a feature vector.
+
+        Only uses features available at the START of proceedings
+        (Klage + Klagebeantwortung stage). No future leakage.
         """
         s = case.get("structured", {})
         features = []
 
-        # 1. Log-normalized Streitwert
+        # 1. Streitwert: log-normalized + unknown flag
         sw = s.get("streitwert_eur")
-        if sw and sw > 0:
-            features.append(math.log1p(sw))
-        else:
-            features.append(0.0)  # 0 = unknown/zero
-
-        # 1b. Streitwert unknown flag (distinguishes "unknown" from "zero")
+        features.append(math.log1p(float(sw)) if sw and float(sw) > 0 else 0.0)
         features.append(1.0 if s.get("streitwert_unbekannt") else 0.0)
 
-        # 2. Claim type (one-hot)
+        # 2. Claim type (one-hot, +1 for "Andere")
         claim_type = s.get("anspruchsart", "Andere")
         claim_vec = [0.0] * (len(CLAIM_TYPES) + 1)
         if claim_type in CLAIM_TYPES:
             claim_vec[CLAIM_TYPES.index(claim_type)] = 1.0
         else:
-            claim_vec[-1] = 1.0  # "Andere"
+            claim_vec[-1] = 1.0
         features.extend(claim_vec)
 
-        # 3. Defense flags
+        # 3. Defense flags (12 boolean fields from Klagebeantwortung)
         einwendungen = s.get("einwendungen", {})
         for defense in DEFENSE_TYPES:
             features.append(1.0 if einwendungen.get(defense) else 0.0)
 
-        # 4. Evidence counts
-        features.append(float(len(s.get("klaeger_beweismittel", []))))
-        features.append(float(len(s.get("beklagter_beweismittel", []))))
+        # 4. Anzahl Einwendungen (derived count — how many defenses were raised)
+        features.append(float(sum(1 for d in DEFENSE_TYPES if einwendungen.get(d))))
 
-        # 5. Legal basis count
-        features.append(float(len(s.get("anspruchsgruende", []))))
+        # 5. Widerklage — defendant filed a counterclaim (strong signal)
+        features.append(1.0 if s.get("widerklage") else 0.0)
 
-        # 6. Court level (one-hot)
+        # 6. Verfahrensart (one-hot, +1 for unknown)
+        verfahrensart = s.get("verfahrensart")
+        va_vec = [0.0] * (len(VERFAHRENSARTEN) + 1)
+        if verfahrensart in VERFAHRENSARTEN:
+            va_vec[VERFAHRENSARTEN.index(verfahrensart)] = 1.0
+        else:
+            va_vec[-1] = 1.0  # unknown
+        features.extend(va_vec)
+
+        # 7. Court level (one-hot: BG / LG / OLG / OGH)
         instanz = s.get("instanz", "")
         instanz_vec = [0.0] * len(self.INSTANZ_CLASSES)
         if instanz in self.INSTANZ_CLASSES:
             instanz_vec[self.INSTANZ_CLASSES.index(instanz)] = 1.0
         features.extend(instanz_vec)
 
-        # 7. Expert witness
-        features.append(1.0 if s.get("sachverstaendiger_bestellt") else 0.0)
+        # 8. Total evidence count per party (from offered evidence lists)
+        features.append(float(len(s.get("klaeger_beweismittel", []))))
+        features.append(float(len(s.get("beklagter_beweismittel", []))))
 
-        # 8. Procedure duration (log-normalized months)
-        dauer = s.get("verfahrensdauer_monate")
-        features.append(math.log1p(float(dauer)) if dauer and float(dauer) > 0 else 0.0)
+        # 9. Evidence type breakdown — Kläger
+        bm_k = s.get("beweismitteltypen_klaeger") or {}
+        for t in BEWEISMITTEL_TYPEN:
+            val = bm_k.get(t, 0)
+            features.append(1.0 if val else 0.0)  # binarize (present / absent)
 
-        # 9. Number of hearings (log-normalized)
-        n_vh = s.get("anzahl_verhandlungen")
-        features.append(math.log1p(float(n_vh)) if n_vh and float(n_vh) > 0 else 0.0)
+        # 10. Evidence type breakdown — Beklagter
+        bm_b = s.get("beweismitteltypen_beklagter") or {}
+        for t in BEWEISMITTEL_TYPEN:
+            val = bm_b.get(t, 0)
+            features.append(1.0 if val else 0.0)
+
+        # 11. Legal basis count (how many ABGB/ZPO paragraphs cited)
+        features.append(float(len(s.get("anspruchsgruende", []))))
 
         return np.array(features, dtype=np.float32)
 

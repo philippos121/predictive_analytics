@@ -120,6 +120,23 @@ DEFENSE_LABELS = {
     "andere": "Sonstige Einwendungen",
 }
 
+# ─── Verfahrensarten (Prozessart beim Erstgericht) ──────────────────────────────
+VERFAHRENSARTEN = [
+    "Mahnverfahren",          # §§ 244 ff ZPO — häufig Forderungen
+    "Ordentliches Verfahren", # Regelfall
+    "Urkundenverfahren",      # § 448 ZPO — urkundengestützte Forderungen
+    "Wechselverfahren",       # § 555 ZPO — Wechsel/Scheck
+]
+
+# ─── Beweismittel-Typen ──────────────────────────────────────────────────────────
+# Typen aufgenommener oder angebotener Beweismittel beim Erstgericht
+BEWEISMITTEL_TYPEN = [
+    "urkunden",           # Urkunden, Verträge, Rechnungen, Schriftverkehr
+    "zeugen",             # Zeugenvernehmungen
+    "sachverstaendige",   # Sachverständigengutachten (angeboten, nicht zwingend bestellt)
+    "parteienvernehmung", # Parteienvernehmung / Parteiaussage
+]
+
 # ─── Text Sections for Embeddings ───────────────────────────────────────────────
 # Nur diese drei Abschnitte fließen als Embeddings ins Modell ein:
 # - Kläger-Vorbringen: Was begehrt der Kläger?

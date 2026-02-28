@@ -30,6 +30,7 @@ from tenacity import (
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
+    BEWEISMITTEL_TYPEN,
     CLAIM_TYPES,
     DEFENSE_TYPES,
     EMBEDDING_DIM,
@@ -37,6 +38,7 @@ from config import (
     OPENAI_EMBEDDING_MODEL,
     OPENAI_EXTRACTION_MODEL,
     OPENAI_REQUEST_DELAY_SEC,
+    VERFAHRENSARTEN,
 )
 
 
@@ -100,11 +102,22 @@ nicht auf das Berufungsgericht oder den OGH.
 
   "klaeger_beweismittel": ["Beweismittel des Klägers im Erstverfahren, z.B. Urkunden, Zeugen, Sachverständige"],
   "beklagter_beweismittel": ["Beweismittel des Beklagten im Erstverfahren"],
-  "sachverstaendiger_bestellt": boolean,
-  "sachverstaendigen_fachgebiet": "z.B. Bautechnik, Medizin oder null",
 
-  "verfahrensdauer_monate": Zahl oder null,
-  "anzahl_verhandlungen": Zahl oder null,
+  "beweismitteltypen_klaeger": {{
+    "urkunden": Anzahl angebotener Urkunden/Dokumente des Klägers (int, 0 wenn keine),
+    "zeugen": Anzahl angebotener Zeugen des Klägers (int, 0 wenn keine),
+    "sachverstaendige": Anzahl beantragter Sachverständige des Klägers (int, 0 wenn keine),
+    "parteienvernehmung": boolean (hat Kläger Parteienvernehmung beantragt?)
+  }},
+  "beweismitteltypen_beklagter": {{
+    "urkunden": Anzahl angebotener Urkunden/Dokumente des Beklagten (int, 0 wenn keine),
+    "zeugen": Anzahl angebotener Zeugen des Beklagten (int, 0 wenn keine),
+    "sachverstaendige": Anzahl beantragter Sachverständige des Beklagten (int, 0 wenn keine),
+    "parteienvernehmung": boolean (hat Beklagter Parteienvernehmung beantragt?)
+  }},
+
+  "widerklage": boolean (hat der Beklagte beim Erstgericht Widerklage erhoben?),
+  "verfahrensart": "Eine der folgenden: {verfahrensarten_str} oder null",
 
   "outcome": 0 oder 1 oder 2,
   "outcome_beschreibung": "Kurze Beschreibung der ERSTGERICHT-Entscheidung (KEINE Namen)",
@@ -251,6 +264,7 @@ class OpenAIExtractor:
         self._log("Extrahiere strukturierte Daten via GPT-4o-mini...", 0.2)
 
         claim_types_str = ", ".join(f'"{c}"' for c in CLAIM_TYPES)
+        verfahrensarten_str = ", ".join(f'"{v}"' for v in VERFAHRENSARTEN)
 
         # Truncate text for extraction (keep first 15000 chars = most relevant)
         truncated_text = text[:15000]
@@ -259,6 +273,7 @@ class OpenAIExtractor:
 
         prompt = EXTRACTION_USER_PROMPT.format(
             claim_types_str=claim_types_str,
+            verfahrensarten_str=verfahrensarten_str,
             text=truncated_text,
         )
 
@@ -456,6 +471,9 @@ class OpenAIExtractor:
     def _validate_and_normalize(self, data: dict) -> dict:
         """Validate and normalize extracted structured data from OGH judgment."""
         # Ensure required fields — datum_ersturteil/datum_ogh statt datum
+        _default_bm_typen = {t: 0 for t in BEWEISMITTEL_TYPEN}
+        _default_bm_typen["parteienvernehmung"] = False
+
         defaults = {
             "datum_ersturteil": None,
             "datum_ogh": None,
@@ -472,6 +490,11 @@ class OpenAIExtractor:
             "einwendungen": {d: False for d in DEFENSE_TYPES},
             "klaeger_beweismittel": [],
             "beklagter_beweismittel": [],
+            "beweismitteltypen_klaeger": dict(_default_bm_typen),
+            "beweismitteltypen_beklagter": dict(_default_bm_typen),
+            "widerklage": False,
+            "verfahrensart": None,
+            # legacy fields kept for backwards-compat with old extractions
             "sachverstaendiger_bestellt": False,
             "sachverstaendigen_fachgebiet": None,
             "verfahrensdauer_monate": None,
@@ -508,5 +531,25 @@ class OpenAIExtractor:
                 data["streitwert_eur"] = float(data["streitwert_eur"])
             except (TypeError, ValueError):
                 data["streitwert_eur"] = None
+
+        # Validate verfahrensart
+        if data.get("verfahrensart") not in VERFAHRENSARTEN:
+            data["verfahrensart"] = None
+
+        # Validate + normalize beweismitteltypen dicts
+        for bm_key in ("beweismitteltypen_klaeger", "beweismitteltypen_beklagter"):
+            bm = data.get(bm_key)
+            if not isinstance(bm, dict):
+                data[bm_key] = {t: 0 for t in BEWEISMITTEL_TYPEN}
+                data[bm_key]["parteienvernehmung"] = False
+            else:
+                for t in BEWEISMITTEL_TYPEN:
+                    if t == "parteienvernehmung":
+                        data[bm_key][t] = bool(bm.get(t, False))
+                    else:
+                        try:
+                            data[bm_key][t] = max(0, int(bm.get(t, 0)))
+                        except (TypeError, ValueError):
+                            data[bm_key][t] = 0
 
         return data

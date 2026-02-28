@@ -164,23 +164,23 @@ EMBEDDING_SECTION_LABELS = {
 # dominant parameter cost (2 × 3072 × emb_output_dim) small.
 # No structured features — embeddings only (klaeger + beklagter).
 #
-# Parameter accounting (emb_out=8, fusion=[32]):
-#   2 encoders:   2 × (3072×8  + 8)           =   49 168
-#   attention:    8×1 + 1                      =        9
-#   fusion:       (2+1)×8×32  + 32             =      800
-#   classifier:   32×3 + 3                     =       99
+# Parameter accounting (emb_out=4, fusion=[16]):
+#   2 encoders:   2 × (3072×4  + 4)           =   24 584
+#   attention:    4×1 + 1                      =        5
+#   fusion:       (2+1)×4×16  + 16             =      208
+#   classifier:   16×3 + 3                     =       51
 #   ──────────────────────────────────────────────────
-#   Total                                      ≈   50 076
+#   Total                                      ≈   24 848   (~25 params/example @ 1 000 cases)
 
 NN_CONFIG = {
-    "embedding_hidden_dim": 0,       # Single projection 3072 → 8 (no hidden layer)
-    "embedding_output_dim": 8,
-    "embedding_noise_std": 0.02,
+    "embedding_hidden_dim": 0,       # Single projection 3072 → 4 (no hidden layer)
+    "embedding_output_dim": 4,
+    "embedding_noise_std": 0.05,     # 0.02 → 0.05: stronger input noise
     "use_section_attention": True,   # Attention over the 2 text sections
     "structured_dim": 0,             # No structured features
-    "fusion_dims": [32],             # fusion_input = (2+1)×8 = 24 → 32 → 3
-    "dropout_embedding": 0.50,
-    "dropout_fusion": 0.50,
+    "fusion_dims": [16],             # fusion_input = (2+1)×4 = 12 → 16 → 3
+    "dropout_embedding": 0.70,       # 0.50 → 0.70: high dropout on wide encoder
+    "dropout_fusion": 0.40,
     "num_classes": 3,
 }
 
@@ -192,7 +192,7 @@ TRAINING_CONFIG = {
     "epochs": 400,
     "batch_size": 32,
     "learning_rate": 3e-4,
-    "weight_decay": 2e-3,
+    "weight_decay": 1e-2,            # 2e-3 → 1e-2: 5× stronger L2
     "lr_scheduler_patience": 25,
     "lr_scheduler_factor": 0.5,
     "early_stopping_patience": 60,
@@ -200,7 +200,7 @@ TRAINING_CONFIG = {
     "random_seed": 42,
     "gradient_clip": 1.0,
     "label_smoothing": 0.1,
-    "mixup_alpha": 0.2,
+    "mixup_alpha": 0.4,              # 0.2 → 0.4: stronger interpolation
 }
 
 # ─── UI Configuration ───────────────────────────────────────────────────────────

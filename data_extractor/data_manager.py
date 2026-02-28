@@ -88,6 +88,60 @@ class DataManager:
 
         return case_record
 
+    def add_cases_bulk(
+        self,
+        entries: list[dict],
+    ) -> list[dict]:
+        """
+        Add multiple cases in a single JSON read/write cycle.
+
+        Each entry must contain:
+          case_id, filename, structured, sections, embeddings
+
+        Returns the list of created case records.
+        Raises ValueError if any filename is already present.
+        """
+        cases = self.load_dataset()
+        existing_filenames = {c["filename"] for c in cases}
+
+        records = []
+        for entry in entries:
+            filename = entry["filename"]
+            if filename in existing_filenames:
+                raise ValueError(f"Fall '{filename}' wurde bereits verarbeitet.")
+            existing_filenames.add(filename)
+
+            record = {
+                "case_id": entry["case_id"],
+                "filename": filename,
+                "processed_at": datetime.now().isoformat(),
+                "structured": entry["structured"],
+                "sections": {k: v for k, v in entry["sections"].items()},
+                "has_embeddings": True,
+            }
+            cases.append(record)
+            records.append(record)
+
+        # Single JSON write for all cases
+        self.save_dataset(cases)
+
+        # Write all embeddings in one HDF5 session
+        with h5py.File(self.embeddings_path, "a") as f:
+            for entry, record in zip(entries, records):
+                case_id = record["case_id"]
+                if case_id in f:
+                    del f[case_id]
+                grp = f.create_group(case_id)
+                for section, vec in entry["embeddings"].items():
+                    vec_array = np.array(vec, dtype=np.float32)
+                    if len(vec_array) != EMBEDDING_DIM:
+                        padded = np.zeros(EMBEDDING_DIM, dtype=np.float32)
+                        padded[: min(len(vec_array), EMBEDDING_DIM)] = vec_array[: EMBEDDING_DIM]
+                        vec_array = padded
+                    grp.create_dataset(section, data=vec_array)
+
+        return records
+
     def update_case(self, case_id: str, updates: dict) -> bool:
         """Update a case record in the dataset."""
         cases = self.load_dataset()

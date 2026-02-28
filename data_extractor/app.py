@@ -485,23 +485,24 @@ with tab_extract:
                                         f"FEHLER  {res['file']}  →  {res['error']}"
                                     )
 
-                        # ── Phase 2: Sequential save to DataManager ───────────────
+                        # ── Phase 2: Bulk save to DataManager (single read/write) ──
                         status_text.markdown("**Speichere in Dataset...**")
                         results = {"success": 0, "error": 0, "gefiltert": 0}
 
+                        bulk_entries = []
+                        bulk_log = []
                         for res in raw_results:
                             if res["status"] == "success":
                                 extracted = res["extracted"]
                                 case_id = dm.generate_case_id()
-                                dm.add_case(
-                                    case_id=case_id,
-                                    filename=res["file"],
-                                    structured=extracted["structured"],
-                                    sections=extracted["sections"],
-                                    embeddings=extracted["embeddings"],
-                                )
-                                results["success"] += 1
-                                st.session_state.process_log.append({
+                                bulk_entries.append({
+                                    "case_id": case_id,
+                                    "filename": res["file"],
+                                    "structured": extracted["structured"],
+                                    "sections": extracted["sections"],
+                                    "embeddings": extracted["embeddings"],
+                                })
+                                bulk_log.append({
                                     "file": res["file"],
                                     "status": "success",
                                     "case_id": case_id,
@@ -521,6 +522,11 @@ with tab_extract:
                                     "status": "error",
                                     "error": res.get("error", ""),
                                 })
+
+                        if bulk_entries:
+                            dm.add_cases_bulk(bulk_entries)
+                            results["success"] = len(bulk_entries)
+                            st.session_state.process_log.extend(bulk_log)
 
                         # ── Done ─────────────────────────────────────────────────
                         st.session_state.processing = False

@@ -164,33 +164,42 @@ EMBEDDING_SECTION_LABELS = {
 # class-relevant directions in the embedding space; a random one does not
 # (we saw train 50 % / val 45 % with freeze_encoders=True, confirming this).
 #
-# Full semantic richness of the 3072-dim OpenAI embeddings is preserved: the
-# learned encoder compresses to 128 dims while keeping the most predictive
-# information, unlike the frozen random projection which discards most of it.
+# Interaction features (use_interaction_features=True):
+#   diff = kl_enc − bk_enc  →  net directional advantage of Kläger over Beklagter
+#   prod = kl_enc * bk_enc  →  element-wise resonance (where both parties agree)
+#   Both are computed from the encoded vectors — zero extra parameters — yet
+#   directly capture the adversarial dynamics that plain concatenation misses.
+#   The scalar SectionAttention alone only weights globally; diff/prod let the
+#   fusion head see the *relative* semantic positions per case.
 #
-# Parameter budget  (emb_out=128, freeze_encoders=False, fusion=[256,128]):
+# Parameter budget  (emb_out=128, interaction=True, fusion=[256,128]):
 #   2 encoders:   2 × (3072×128 + 128)             =  786 688   ← learned
+#   interaction:  0  (diff + prod computed, not learned)
 #   attention:    128×1 + 1                          =      129   ← learned
-#   fusion:       384×256+256 + LN(256)              =   99 072   ← learned
+#   fusion:       640×256+256 + LN(256)              =  165 120   ← learned
 #                 256×128+128 + LN(128)              =   33 152   ← learned
 #   classifier:   128×3 + 3                          =      387   ← learned
 #   ──────────────────────────────────────────────────────────────
-#   Total                                             ≈  919 428   (~115 params/example @ 8 000 training)
+#   Total                                             ≈  985 476   (~123 params/example @ 8 000 training)
 #
-# Regularisation mix for 115 params/example:
+# Fusion input breakdown:
+#   kl_enc(128) + bk_enc(128) + diff(128) + prod(128) + attended(128) = 640
+#
+# Regularisation mix:
 #   • dropout_embedding 0.20  — encoder regularisation
 #   • dropout_fusion    0.35  — fusion regularisation
 #   • Gaussian noise std 0.01 — stochastic input perturbation
-#   • weight_decay 1e-3, label_smoothing 0.1, mixup 0.3
+#   • weight_decay 1e-3, label_smoothing 0.1, mixup 0.3, SWA (last 40 % epochs)
 
 NN_CONFIG = {
-    "embedding_hidden_dim": 0,        # single-layer encoder: 3072 → 128
-    "embedding_output_dim": 128,      # learned — finds class-relevant directions
-    "embedding_noise_std": 0.01,      # light Gaussian noise on raw embeddings
-    "freeze_encoders": False,         # LEARNED projection (needs 7 500+ training cases)
-    "use_section_attention": True,    # attention over klaeger + beklagter
-    "structured_dim": 0,              # embeddings only
-    "fusion_dims": [256, 128],        # richer fusion head appropriate for 10k dataset
+    "embedding_hidden_dim": 0,           # single-layer encoder: 3072 → 128
+    "embedding_output_dim": 128,         # learned — finds class-relevant directions
+    "embedding_noise_std": 0.01,         # light Gaussian noise on raw embeddings
+    "freeze_encoders": False,            # LEARNED projection (needs 7 500+ training cases)
+    "use_section_attention": True,       # attention over klaeger + beklagter
+    "use_interaction_features": True,    # diff + prod of encoded sections (zero extra params)
+    "structured_dim": 0,                 # embeddings only
+    "fusion_dims": [256, 128],           # fusion head appropriate for 10k dataset
     "dropout_embedding": 0.20,
     "dropout_fusion": 0.35,
     "num_classes": 3,
@@ -209,7 +218,7 @@ TRAINING_CONFIG = {
     "lr_scheduler_patience": 30,
     "lr_scheduler_factor": 0.5,
     "early_stopping_patience": 50,
-    "use_swa": False,
+    "use_swa": True,
     "val_split": 0.20,                # 20 % val → 8 000 training examples at 10k
     "random_seed": 42,
     "gradient_clip": 1.0,

@@ -197,11 +197,22 @@ class LitigationClassifier(nn.Module):
             )
             struct_encoded_dim = struct_hidden
 
-        # Fusion: per-section encodings + optional attention + optional struct
-        # With attention: (n_sections + 1) * emb_output_dim + struct_encoded_dim
-        # Without:        n_sections * emb_output_dim + struct_encoded_dim
+        # Interaction features: diff + prod of the two section encodings.
+        # Computed in forward() — zero extra parameters.
+        # diff = kl_enc − bk_enc: net directional advantage in embedding space
+        # prod = kl_enc * bk_enc: element-wise resonance between parties
+        self.use_interaction_features = config.get("use_interaction_features", False)
+        interaction_extra = 2 * emb_output_dim if self.use_interaction_features else 0
+
+        # Fusion: per-section encodings + optional interaction + optional attention + optional struct
+        # With interaction + attention: n_sections*emb_out + 2*emb_out + emb_out + struct
         attn_extra = emb_output_dim if self.use_section_attention else 0
-        fusion_input_dim = n_sections * emb_output_dim + attn_extra + struct_encoded_dim
+        fusion_input_dim = (
+            n_sections * emb_output_dim
+            + interaction_extra
+            + attn_extra
+            + struct_encoded_dim
+        )
         layers = []
         prev_dim = fusion_input_dim
         for dim in fusion_dims:
@@ -249,6 +260,16 @@ class LitigationClassifier(nn.Module):
         # Concatenate per-section encodings
         section_concat = torch.cat(encoded_sections, dim=-1)  # (batch, n*emb_out)
 
+        # Interaction features: free signal about the adversarial relationship.
+        # diff captures the net directional advantage of Kläger over Beklagter;
+        # prod captures element-wise resonance where both parties' arguments align.
+        # Zero extra parameters — computed directly from the encoded sections.
+        if self.use_interaction_features and len(encoded_sections) == 2:
+            kl, bk = encoded_sections[0], encoded_sections[1]
+            diff = kl - bk   # (batch, emb_out)
+            prod = kl * bk   # (batch, emb_out)
+            section_concat = torch.cat([section_concat, diff, prod], dim=-1)
+
         # Optional attended summary over sections
         if self.use_section_attention:
             attended = self.section_attention(encoded_sections)  # (batch, emb_out)
@@ -288,6 +309,7 @@ class LitigationClassifier(nn.Module):
             "embedding_dim_input": EMBEDDING_DIM,
             "embedding_dim_output": self.config["embedding_output_dim"],
             "use_section_attention": self.use_section_attention,
+            "use_interaction_features": self.use_interaction_features,
             "structured_dim": self.structured_dim,
             "struct_encoder_dim": self.config.get("struct_encoder_dim", 16),
             "fusion_dims": self.config["fusion_dims"],

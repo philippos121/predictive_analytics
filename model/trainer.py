@@ -275,8 +275,10 @@ class LitigationTrainer:
         )
 
         # Stochastic Weight Averaging over the last 40 % of epochs.
-        # Start at 60 % so SWA is reachable even with early stopping.
-        use_swa = True
+        # Disabled when freeze_encoders is active: the tiny trainable head
+        # converges fast and then overfits; SWA would average those overfit
+        # snapshots.  Early stopping handles the stopping criterion instead.
+        use_swa = effective_config.get("use_swa", True)
         swa_start = max(1, int(effective_config["epochs"] * 0.60))
         swa_snapshots: list[dict] = []   # state_dicts collected after swa_start
 

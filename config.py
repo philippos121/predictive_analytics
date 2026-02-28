@@ -196,13 +196,14 @@ NN_CONFIG = {
 # are applied on top of these defaults when changed in the sidebar.
 
 TRAINING_CONFIG = {
-    "epochs": 400,
+    "epochs": 200,
     "batch_size": 32,
     "learning_rate": 3e-4,
     "weight_decay": 5e-4,            # light: only ~6.5 k params are trainable
     "lr_scheduler_patience": 25,
     "lr_scheduler_factor": 0.5,
-    "early_stopping_patience": 60,
+    "early_stopping_patience": 40,   # stop 40 epochs after val acc peaks
+    "use_swa": False,                 # disabled: tiny head converges fast, SWA averages overfit snapshots
     "val_split": 0.25,
     "random_seed": 42,
     "gradient_clip": 1.0,

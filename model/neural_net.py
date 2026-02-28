@@ -166,6 +166,17 @@ class LitigationClassifier(nn.Module):
             for _ in range(n_sections)
         ])
 
+        # Freeze encoder weights to act as fixed random projections.
+        # With 3072-dim inputs, a learned 3072→k projection has enough freedom
+        # to memorise every training example regardless of regularisation strength.
+        # Freezing forces the model to classify in a fixed random subspace;
+        # only the tiny attention + fusion head (~6 k params) remains trainable,
+        # making memorisation near-impossible.
+        if config.get("freeze_encoders", False):
+            for enc in self.embedding_encoders:
+                for param in enc.parameters():
+                    param.requires_grad = False
+
         # Optional cross-section attention
         self.use_section_attention = config.get("use_section_attention", False)
         if self.use_section_attention:

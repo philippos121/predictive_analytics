@@ -164,23 +164,30 @@ EMBEDDING_SECTION_LABELS = {
 # dominant parameter cost (2 × 3072 × emb_output_dim) small.
 # No structured features — embeddings only (klaeger + beklagter).
 #
-# Parameter accounting (emb_out=4, fusion=[16]):
-#   2 encoders:   2 × (3072×4  + 4)           =   24 584
-#   attention:    4×1 + 1                      =        5
-#   fusion:       (2+1)×4×16  + 16             =      208
-#   classifier:   16×3 + 3                     =       51
-#   ──────────────────────────────────────────────────
-#   Total                                      ≈   24 848   (~25 params/example @ 1 000 cases)
+# Encoders are FROZEN (random projection) — only attention + fusion are trained.
+# A learned 3072→k projection has enough freedom to memorise every training
+# example regardless of dropout / weight-decay strength.  Freezing removes this
+# source of memorisation entirely; the fixed random projection still preserves
+# geometric structure (Johnson-Lindenstrauss) so classification remains possible.
+#
+# Learnable parameter accounting (emb_out=32, freeze_encoders=True, fusion=[64]):
+#   2 encoders:   FROZEN  (196 672 params, not trained)
+#   attention:    32×1 + 1                      =       33   ← learnable
+#   fusion:       (2+1)×32×64 + 64+64+64       =    6 336   ← learnable
+#   classifier:   64×3 + 3                      =      195   ← learnable
+#   ──────────────────────────────────────────────────────────
+#   Total learnable                              ≈    6 564   (~8.8 params/example @ 750 training)
 
 NN_CONFIG = {
-    "embedding_hidden_dim": 0,       # Single projection 3072 → 4 (no hidden layer)
-    "embedding_output_dim": 4,
-    "embedding_noise_std": 0.05,     # 0.02 → 0.05: stronger input noise
+    "embedding_hidden_dim": 0,       # Single projection 3072 → 32
+    "embedding_output_dim": 32,      # larger: frozen projection needs more dims
+    "embedding_noise_std": 0.0,      # no noise needed on frozen encoders
+    "freeze_encoders": True,         # KEY: fixed random projection, only fusion trained
     "use_section_attention": True,   # Attention over the 2 text sections
     "structured_dim": 0,             # No structured features
-    "fusion_dims": [16],             # fusion_input = (2+1)×4 = 12 → 16 → 3
-    "dropout_embedding": 0.70,       # 0.50 → 0.70: high dropout on wide encoder
-    "dropout_fusion": 0.40,
+    "fusion_dims": [64],             # fusion_input = (2+1)×32 = 96 → 64 → 3
+    "dropout_embedding": 0.0,        # frozen encoders cannot overfit
+    "dropout_fusion": 0.50,
     "num_classes": 3,
 }
 
@@ -192,7 +199,7 @@ TRAINING_CONFIG = {
     "epochs": 400,
     "batch_size": 32,
     "learning_rate": 3e-4,
-    "weight_decay": 1e-2,            # 2e-3 → 1e-2: 5× stronger L2
+    "weight_decay": 5e-4,            # light: only ~6.5 k params are trainable
     "lr_scheduler_patience": 25,
     "lr_scheduler_factor": 0.5,
     "early_stopping_patience": 60,
@@ -200,7 +207,7 @@ TRAINING_CONFIG = {
     "random_seed": 42,
     "gradient_clip": 1.0,
     "label_smoothing": 0.1,
-    "mixup_alpha": 0.4,              # 0.2 → 0.4: stronger interpolation
+    "mixup_alpha": 0.2,
 }
 
 # ─── UI Configuration ───────────────────────────────────────────────────────────

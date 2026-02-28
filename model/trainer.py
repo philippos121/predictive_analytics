@@ -63,26 +63,25 @@ class EarlyStopping:
 
 def _mixup_batch(
     embeddings: list,
+    struct_features: torch.Tensor,
     labels: torch.Tensor,
     alpha: float,
 ) -> tuple:
     """
-    Mixup augmentation for embedding inputs.
+    Mixup augmentation for embedding + structured feature inputs.
 
-    Interpolates pairs of training samples (both embeddings and labels) using
-    a Beta(alpha, alpha) mixing coefficient.  Prevents the model from memorising
-    individual training points and smooths the decision boundaries.
+    Interpolates pairs of training samples (embeddings, struct features, labels)
+    using a Beta(alpha, alpha) mixing coefficient.
 
     Returns:
-        mixed_embeddings: list of (batch, dim) tensors
-        labels_a, labels_b: original label tensors for the two mixed samples
-        lam: scalar mixing coefficient (dominant sample has weight lam)
+        mixed_embeddings, mixed_struct, labels_a, labels_b, lam
     """
     lam = float(np.random.beta(alpha, alpha))
     batch_size = labels.size(0)
     perm = torch.randperm(batch_size, device=labels.device)
     mixed = [lam * e + (1.0 - lam) * e[perm] for e in embeddings]
-    return mixed, labels, labels[perm], lam
+    mixed_struct = lam * struct_features + (1.0 - lam) * struct_features[perm]
+    return mixed, mixed_struct, labels, labels[perm], lam
 
 
 class LitigationTrainer:
@@ -131,6 +130,7 @@ class LitigationTrainer:
             embeddings_dict,
             val_split=self.config["val_split"],
             random_seed=self.config["random_seed"],
+            feature_engineer=self.feature_engineer,
         )
 
         return train_ds, val_ds, full_ds
@@ -225,6 +225,21 @@ class LitigationTrainer:
 
         # ── Data Preparation ─────────────────────────────────────────────────────
         self._log(phase="preparing", message="Daten werden vorbereitet...")
+
+        # Fit feature engineer on all labeled cases so the scaler is ready
+        # before the dataset is created. Fitting on all cases (not just train
+        # split) introduces negligible contamination for StandardScaler over
+        # ~40 features and avoids a chicken-and-egg split dependency.
+        labeled_for_scaler = [
+            c for c in cases
+            if c["structured"].get("outcome") is not None
+            and c["case_id"] in embeddings_dict
+        ]
+        self.feature_engineer.fit_transform(labeled_for_scaler)
+        structured_dim = self.feature_engineer.feature_dim
+
+        # Inject structured_dim so the model builds the right fusion layer
+        active_nn_config = {**active_nn_config, "structured_dim": structured_dim}
 
         train_ds, val_ds, full_ds = self.prepare_data(cases, embeddings_dict)
 
@@ -327,18 +342,19 @@ class LitigationTrainer:
             model.train()
             train_loss, train_correct, train_total = 0.0, 0, 0
 
-            for emb_batch, label_batch in train_loader:
+            for emb_batch, struct_batch, label_batch in train_loader:
                 emb_batch = [e.to(self.device) for e in emb_batch]
+                struct_batch = struct_batch.to(self.device)
                 label_batch = label_batch.to(self.device)
 
                 optimizer.zero_grad()
 
                 if _mixup_alpha > 0 and len(label_batch) > 1:
                     # Mixup: interpolate pairs of samples to prevent memorisation
-                    mixed_emb, labels_a, labels_b, lam = _mixup_batch(
-                        emb_batch, label_batch, _mixup_alpha
+                    mixed_emb, mixed_struct, labels_a, labels_b, lam = _mixup_batch(
+                        emb_batch, struct_batch, label_batch, _mixup_alpha
                     )
-                    logits, _ = model(mixed_emb)
+                    logits, _ = model(mixed_emb, mixed_struct)
                     loss = (
                         lam * criterion(logits, labels_a)
                         + (1.0 - lam) * criterion(logits, labels_b)
@@ -346,7 +362,7 @@ class LitigationTrainer:
                     # Accuracy tracked against the dominant (higher-weight) label
                     ref_labels = labels_a if lam >= 0.5 else labels_b
                 else:
-                    logits, _ = model(emb_batch)
+                    logits, _ = model(emb_batch, struct_batch)
                     loss = criterion(logits, label_batch)
                     ref_labels = label_batch
 
@@ -548,11 +564,12 @@ class LitigationTrainer:
         total_loss, correct, total = 0.0, 0, 0
 
         with torch.no_grad():
-            for emb_batch, label_batch in loader:
+            for emb_batch, struct_batch, label_batch in loader:
                 emb_batch = [e.to(self.device) for e in emb_batch]
+                struct_batch = struct_batch.to(self.device)
                 label_batch = label_batch.to(self.device)
 
-                logits, _ = model(emb_batch)
+                logits, _ = model(emb_batch, struct_batch)
                 loss = criterion(logits, label_batch)
 
                 total_loss += loss.item() * len(label_batch)
@@ -575,7 +592,7 @@ class LitigationTrainer:
         if self.model is None:
             raise RuntimeError("Model not trained/loaded.")
 
-        full_ds = LitigationDataset(cases, embeddings_dict)
+        full_ds = LitigationDataset(cases, embeddings_dict, feature_engineer=self.feature_engineer)
         loader = DataLoader(
             full_ds, batch_size=32, shuffle=False, collate_fn=collate_fn
         )
@@ -584,10 +601,11 @@ class LitigationTrainer:
         all_preds, all_labels, all_probs = [], [], []
 
         with torch.no_grad():
-            for emb_batch, label_batch in loader:
+            for emb_batch, struct_batch, label_batch in loader:
                 emb_batch = [e.to(self.device) for e in emb_batch]
+                struct_batch = struct_batch.to(self.device)
 
-                logits, probs = self.model(emb_batch)
+                logits, probs = self.model(emb_batch, struct_batch)
                 preds = logits.argmax(dim=-1)
 
                 all_preds.extend(preds.cpu().numpy())

@@ -14,7 +14,7 @@ import math
 import pickle
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 import torch
@@ -67,6 +67,7 @@ class FeatureEngineer:
     def _compute_feature_dim(self) -> int:
         n = 0
         n += 1                          # log_streitwert
+        n += 1                          # streitwert_unbekannt flag
         n += len(CLAIM_TYPES) + 1       # claim_type one-hot (+1 for "other")
         n += len(DEFENSE_TYPES)         # defense flags
         n += 1                          # klaeger_beweismittel count
@@ -74,6 +75,8 @@ class FeatureEngineer:
         n += 1                          # anspruchsgruende count
         n += len(self.INSTANZ_CLASSES)  # court level one-hot
         n += 1                          # sachverstaendiger
+        n += 1                          # verfahrensdauer_monate (log)
+        n += 1                          # anzahl_verhandlungen (log)
         return n
 
     def encode_case(self, case: dict) -> np.ndarray:
@@ -89,6 +92,9 @@ class FeatureEngineer:
             features.append(math.log1p(sw))
         else:
             features.append(0.0)  # 0 = unknown/zero
+
+        # 1b. Streitwert unknown flag (distinguishes "unknown" from "zero")
+        features.append(1.0 if s.get("streitwert_unbekannt") else 0.0)
 
         # 2. Claim type (one-hot)
         claim_type = s.get("anspruchsart", "Andere")
@@ -120,6 +126,14 @@ class FeatureEngineer:
 
         # 7. Expert witness
         features.append(1.0 if s.get("sachverstaendiger_bestellt") else 0.0)
+
+        # 8. Procedure duration (log-normalized months)
+        dauer = s.get("verfahrensdauer_monate")
+        features.append(math.log1p(float(dauer)) if dauer and float(dauer) > 0 else 0.0)
+
+        # 9. Number of hearings (log-normalized)
+        n_vh = s.get("anzahl_verhandlungen")
+        features.append(math.log1p(float(n_vh)) if n_vh and float(n_vh) > 0 else 0.0)
 
         return np.array(features, dtype=np.float32)
 
@@ -169,6 +183,7 @@ class LitigationDataset(torch.utils.data.Dataset):
 
     Each item returns:
     - embeddings: list of tensors (one per section), each shape (EMBEDDING_DIM,)
+    - struct_features: tensor of shape (feature_dim,), zeros if no feature_engineer
     - label: int (0, 1, 2)
     """
 
@@ -176,9 +191,11 @@ class LitigationDataset(torch.utils.data.Dataset):
         self,
         cases: list[dict],
         embeddings_dict: dict[str, dict[str, np.ndarray]],
+        feature_engineer: Optional["FeatureEngineer"] = None,
     ):
         self.cases = cases
         self.embeddings_dict = embeddings_dict
+        self.feature_engineer = feature_engineer
 
         # Filter to cases that have all required data
         self.valid_indices = [
@@ -205,10 +222,17 @@ class LitigationDataset(torch.utils.data.Dataset):
                 vec = np.zeros(EMBEDDING_DIM, dtype=np.float32)
             embeddings.append(torch.tensor(vec, dtype=torch.float32))
 
+        # Structured features (zeros if no feature_engineer provided)
+        if self.feature_engineer is not None:
+            struct_vec = self.feature_engineer.encode_single_transform(case)
+            struct_tensor = torch.tensor(struct_vec, dtype=torch.float32)
+        else:
+            struct_tensor = torch.zeros(0, dtype=torch.float32)
+
         # Label
         label = int(case["structured"]["outcome"])
 
-        return embeddings, label
+        return embeddings, struct_tensor, label
 
 
 def prepare_dataset(
@@ -216,6 +240,7 @@ def prepare_dataset(
     embeddings_dict: dict[str, dict],
     val_split: float = TRAINING_CONFIG["val_split"],
     random_seed: int = TRAINING_CONFIG["random_seed"],
+    feature_engineer: Optional["FeatureEngineer"] = None,
 ) -> tuple["LitigationDataset", "LitigationDataset", "LitigationDataset"]:
     """
     Prepare train, validation, and full datasets.
@@ -225,7 +250,7 @@ def prepare_dataset(
     """
     np.random.seed(random_seed)
 
-    full_dataset = LitigationDataset(cases, embeddings_dict)
+    full_dataset = LitigationDataset(cases, embeddings_dict, feature_engineer=feature_engineer)
 
     if len(full_dataset) == 0:
         raise ValueError("No valid labeled cases with embeddings found.")
@@ -269,9 +294,10 @@ class _SubsetDataset(torch.utils.data.Dataset):
 
 
 def collate_fn(batch: list) -> tuple:
-    """Custom collate for multi-section embeddings."""
+    """Custom collate for multi-section embeddings + structured features."""
     embeddings_batch = [item[0] for item in batch]
-    labels_batch = torch.tensor([item[1] for item in batch], dtype=torch.long)
+    struct_batch = torch.stack([item[1] for item in batch])   # (batch, struct_dim)
+    labels_batch = torch.tensor([item[2] for item in batch], dtype=torch.long)
 
     # Transpose: (batch, n_sections, dim) → list of (batch, dim)
     n_sections = len(EMBEDDING_SECTIONS)
@@ -280,7 +306,7 @@ def collate_fn(batch: list) -> tuple:
         for s in range(n_sections)
     ]
 
-    return embeddings_by_section, labels_batch
+    return embeddings_by_section, struct_batch, labels_batch
 
 
 def compute_class_weights(cases: list[dict]) -> torch.Tensor:

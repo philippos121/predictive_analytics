@@ -90,8 +90,19 @@ class LitigationPredictor:
                 torch.tensor(vec, dtype=torch.float32).unsqueeze(0).to(self.device)
             )
 
+        # Structured features (zeros if scaler not fitted or model has no struct branch)
+        struct_tensor = None
+        if (self.feature_engineer.is_fitted
+                and getattr(self.model, "structured_dim", 0) > 0):
+            struct_vec = self.feature_engineer.encode_single_transform(case_dict)
+            struct_tensor = (
+                torch.tensor(struct_vec, dtype=torch.float32)
+                .unsqueeze(0)
+                .to(self.device)
+            )
+
         with torch.no_grad():
-            logits, probs = self.model(emb_tensors)
+            logits, probs = self.model(emb_tensors, struct_tensor)
 
         probs_np = probs.cpu().numpy()[0]
         predicted_class = int(probs_np.argmax())
@@ -281,5 +292,5 @@ class LitigationPredictor:
             return "NICHT EMPFOHLEN — Geringe Erfolgschancen"
 
     def get_feature_importance(self) -> Optional[dict]:
-        """Not available — model uses embeddings only (no structured features)."""
+        """Not available — structured features are encoded via learned MLP."""
         return None

@@ -12,6 +12,7 @@ Output: 3-class (Unterliegen / Teilweise / Obsiegen)
 
 import sys
 from pathlib import Path
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -133,15 +134,13 @@ class LitigationClassifier(nn.Module):
     """
     Main classification model for Austrian civil case outcome prediction.
 
-    Architecture (rein embedding-basiert, 3-tier adaptive):
-    - n EmbeddingEncoders (je ein Encoder pro Textabschnitt):
+    Architecture (3-tier adaptive):
+    - n EmbeddingEncoders (one per text section):
         klaegervorbringen, beklagtenvorbringen, aufgenommene_beweise
     - Optional SectionAttention (learnable weights over sections)
+    - Optional structured feature branch (claim type, defense flags, Streitwert, etc.)
     - Flat fusion MLP
     - 3-class output (0=Unterliegen, 1=Teilweise, 2=Obsiegen)
-
-    Keine strukturierten Merkmale — Training und Inference verwenden
-    identische Inputs (Textfelder der Parteien).
     """
 
     def __init__(self, config: dict = NN_CONFIG, **kwargs):
@@ -172,11 +171,26 @@ class LitigationClassifier(nn.Module):
         if self.use_section_attention:
             self.section_attention = SectionAttention(section_dim=emb_output_dim)
 
-        # Fusion: per-section encodings + optional attended summary
-        # With attention: (n_sections + 1) * emb_output_dim
-        # Without:        n_sections * emb_output_dim
+        # Optional structured feature branch
+        # A small dedicated MLP lets the model learn interactions among the
+        # structured fields before they are mixed with the embedding features.
+        self.structured_dim = config.get("structured_dim", 0)
+        struct_encoded_dim = 0
+        if self.structured_dim > 0:
+            struct_hidden = 32
+            self.struct_encoder = nn.Sequential(
+                nn.Linear(self.structured_dim, struct_hidden),
+                nn.LayerNorm(struct_hidden),
+                nn.GELU(),
+                nn.Dropout(dropout_fusion),
+            )
+            struct_encoded_dim = struct_hidden
+
+        # Fusion: per-section encodings + optional attention + optional struct
+        # With attention: (n_sections + 1) * emb_output_dim + struct_encoded_dim
+        # Without:        n_sections * emb_output_dim + struct_encoded_dim
         attn_extra = emb_output_dim if self.use_section_attention else 0
-        fusion_input_dim = n_sections * emb_output_dim + attn_extra
+        fusion_input_dim = n_sections * emb_output_dim + attn_extra + struct_encoded_dim
         layers = []
         prev_dim = fusion_input_dim
         for dim in fusion_dims:
@@ -204,10 +218,12 @@ class LitigationClassifier(nn.Module):
     def forward(
         self,
         embeddings: list[torch.Tensor],
+        struct_features: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
             embeddings: list of (batch, EMBEDDING_DIM) tensors, one per section
+            struct_features: (batch, structured_dim) tensor or None
 
         Returns:
             logits: (batch, 3)
@@ -227,6 +243,13 @@ class LitigationClassifier(nn.Module):
             attended = self.section_attention(encoded_sections)  # (batch, emb_out)
             section_concat = torch.cat([section_concat, attended], dim=-1)
 
+        # Optional structured feature branch
+        if (self.structured_dim > 0
+                and struct_features is not None
+                and struct_features.size(-1) > 0):
+            struct_encoded = self.struct_encoder(struct_features)  # (batch, 32)
+            section_concat = torch.cat([section_concat, struct_encoded], dim=-1)
+
         # Fuse and classify
         fused = self.fusion(section_concat)
         logits = self.classifier(fused)
@@ -237,10 +260,11 @@ class LitigationClassifier(nn.Module):
     def predict_proba(
         self,
         embeddings: list[torch.Tensor],
+        struct_features: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Convenience method returning probabilities only."""
         with torch.no_grad():
-            _, probs = self.forward(embeddings)
+            _, probs = self.forward(embeddings, struct_features)
         return probs
 
     def count_parameters(self) -> int:
@@ -253,6 +277,7 @@ class LitigationClassifier(nn.Module):
             "embedding_dim_input": EMBEDDING_DIM,
             "embedding_dim_output": self.config["embedding_output_dim"],
             "use_section_attention": self.use_section_attention,
+            "structured_dim": self.structured_dim,
             "fusion_dims": self.config["fusion_dims"],
             "num_classes": self.config["num_classes"],
         }

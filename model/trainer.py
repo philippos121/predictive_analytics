@@ -21,14 +21,8 @@ from config import (
     KNN_THRESHOLD,
     MODEL_CHECKPOINT,
     NN_CONFIG,
-    NN_CONFIG_MEDIUM,
-    NN_CONFIG_LARGE,
-    NN_SMALL_THRESHOLD,
-    NN_MEDIUM_THRESHOLD,
     SCALER_FILE,
     TRAINING_CONFIG,
-    TRAINING_CONFIG_MEDIUM,
-    TRAINING_CONFIG_LARGE,
     TRAINING_HISTORY_FILE,
 )
 from model.feature_engineer import (
@@ -180,45 +174,23 @@ class LitigationTrainer:
         # Neural network path — clear any previous kNN
         self.knn = None
 
-        # ── Tier-adaptive architecture + training config ──────────────────────────
-        # Pick NN architecture and training hyper-parameters based on dataset size.
-        # User-supplied overrides in self.config (epochs / lr / early_stop from UI)
-        # take precedence over tier defaults for those three keys.
-        if n_labeled < NN_SMALL_THRESHOLD:
-            active_nn_config = NN_CONFIG
-            tier_config = TRAINING_CONFIG
-            config_tier = "klein"
-            # FocalLoss γ=2.0: focus on hard examples in small datasets
-            _focal_gamma = 2.0
-            _label_smoothing = 0.0
-        elif n_labeled < NN_MEDIUM_THRESHOLD:
-            active_nn_config = NN_CONFIG_MEDIUM
-            tier_config = TRAINING_CONFIG_MEDIUM
-            config_tier = "mittel"
-            _focal_gamma = 1.5
-            _label_smoothing = 0.05
-        else:
-            active_nn_config = NN_CONFIG_LARGE
-            tier_config = TRAINING_CONFIG_LARGE
-            config_tier = "groß"
-            # CE with label smoothing is more stable than Focal for balanced 3-class
-            _focal_gamma = 0.0
-            _label_smoothing = 0.10
+        # ── Architecture + training config ────────────────────────────────────────
+        # User-supplied overrides (epochs / lr / early_stop from UI) take
+        # precedence over the base TRAINING_CONFIG for those three keys.
+        active_nn_config = NN_CONFIG
+        _label_smoothing = TRAINING_CONFIG["label_smoothing"]
 
-        # Merge: tier defaults are the base; user UI values override epochs/lr/patience
         USER_KEYS = {"epochs", "learning_rate", "early_stopping_patience"}
         effective_config = {
-            **tier_config,
+            **TRAINING_CONFIG,
             **{k: v for k, v in self.config.items() if k in USER_KEYS},
-            # preserve non-overrideable keys that may differ between tiers
         }
 
         self._log(
-            phase="tier_selected",
-            config_tier=config_tier,
+            phase="config_selected",
             n_labeled=n_labeled,
             dropout_emb=active_nn_config["dropout_embedding"],
-            weight_decay=tier_config["weight_decay"],
+            weight_decay=effective_config["weight_decay"],
         )
 
         start_time = time.time()
@@ -281,48 +253,27 @@ class LitigationTrainer:
             device=str(self.device),
         )
 
-        # Adaptive loss: Focal (with optional label smoothing) for small/medium,
-        # label-smoothed CE for large (γ=0)
         class_weights = compute_class_weights(cases).to(self.device)
-        if _focal_gamma > 0:
-            criterion = FocalLoss(
-                gamma=_focal_gamma,
-                alpha=class_weights,
-                label_smoothing=_label_smoothing,
-            )
-        else:
-            criterion = nn.CrossEntropyLoss(
-                weight=class_weights,
-                label_smoothing=_label_smoothing,
-            )
+        criterion = nn.CrossEntropyLoss(
+            weight=class_weights,
+            label_smoothing=_label_smoothing,
+        )
 
         optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=effective_config["learning_rate"],
-            weight_decay=tier_config["weight_decay"],
+            weight_decay=effective_config["weight_decay"],
         )
 
-        # Medium / Large → CosineAnnealingLR for better loss-landscape exploration.
-        # Small → ReduceLROnPlateau (more conservative, reacts to val loss).
-        use_cosine = config_tier in ("mittel", "groß")
-        if use_cosine:
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer,
-                T_max=effective_config["epochs"],
-                eta_min=1e-7,
-            )
-        else:
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer,
-                mode="min",
-                factor=effective_config["lr_scheduler_factor"],
-                patience=effective_config["lr_scheduler_patience"],
-                verbose=False,
-            )
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=effective_config["epochs"],
+            eta_min=1e-7,
+        )
 
-        # Large tier: Stochastic Weight Averaging over the last 40 % of epochs.
-        # Start at 60 % (down from 80 %) so SWA is reachable even with early stopping.
-        use_swa = config_tier == "groß"
+        # Stochastic Weight Averaging over the last 40 % of epochs.
+        # Start at 60 % so SWA is reachable even with early stopping.
+        use_swa = True
         swa_start = max(1, int(effective_config["epochs"] * 0.60))
         swa_snapshots: list[dict] = []   # state_dicts collected after swa_start
 

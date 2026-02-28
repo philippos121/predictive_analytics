@@ -159,30 +159,15 @@ EMBEDDING_SECTION_LABELS = {
     "aufgenommene_beweise": "Aufgenommene Beweise",
 }
 
-# ─── Adaptive Model-Size Thresholds ─────────────────────────────────────────────
-# trainer.py selects one of three configs automatically based on n_labeled cases.
-#   < NN_SMALL_THRESHOLD  → small  (kNN or tiny NN; heavy overfit risk)
-#   < NN_MEDIUM_THRESHOLD → medium (moderate capacity + regularization)
-#   ≥ NN_MEDIUM_THRESHOLD → large  (full capacity + strong regularization)
-NN_SMALL_THRESHOLD = 150
-NN_MEDIUM_THRESHOLD = 600
-
-# ─── Neural Network Configurations ──────────────────────────────────────────────
+# ─── Neural Network Configuration ───────────────────────────────────────────────
 # text-embedding-3-large outputs 3072-dim vectors that are already highly semantic.
-# The dominant cost is the first projection layer: 3 × 3072 × emb_output_dim.
-# With ~1 000 cases the model must be SMALL — approximate parameter budgets:
-#
-#   Small  (50–149 cases)  →  ~25 K params
-#   Medium (150–599 cases) →  ~75 K params
-#   Large  (≥ 600 cases)   → ~150 K params
-#
-# All tiers use a SINGLE linear projection (hidden_dim = 0): 3072 → emb_output_dim.
+# A SINGLE linear projection per section (embedding_hidden_dim = 0) keeps the
+# dominant parameter cost (3 × 3072 × emb_output_dim) small.
 # Non-linearity comes from GELU activations in the fusion MLP and struct encoder.
-# struct_encoder_dim: bottleneck for the structured-feature branch (→ fusion).
 #
-# Parameter accounting for LARGE (emb_out=16, struct_enc=24, fusion=[64,32]):
+# Parameter accounting (emb_out=16, struct_enc=24, fusion=[64,32]):
 #   3 encoders:   3 × (3072×16 + 16)         =  147 504
-#   attention:    16 + 16                     =       32   (bias + weight)
+#   attention:    16 + 16                     =       32
 #   struct_enc:   40×24 + 24                  =      984
 #   fusion 1:     (4×16 + 24)×64 + 64        =    7 232
 #   fusion 2:     64×32 + 32                 =    2 080
@@ -190,89 +175,35 @@ NN_MEDIUM_THRESHOLD = 600
 #   ──────────────────────────────────────────────────
 #   Total                                    ≈  158 000
 
-NN_CONFIG = {                        # Small (50–149 cases) — ~25 K params
-    "embedding_hidden_dim": 0,       # Single projection 3072 → 4
-    "embedding_output_dim": 4,
-    "embedding_noise_std": 0.01,
-    "use_section_attention": False,  # Off — too few cases to learn attention reliably
-    "struct_encoder_dim": 8,         # structured branch: 40 → 8
-    "fusion_dims": [16],             # fusion_input = 3×4 + 8 = 20 → 16 → 3
-    "dropout_embedding": 0.35,
-    "dropout_fusion": 0.35,
-    "num_classes": 3,
-}
-
-NN_CONFIG_MEDIUM = {                 # Medium (150–599 cases) — ~75 K params
-    "embedding_hidden_dim": 0,       # Single projection 3072 → 8
-    "embedding_output_dim": 8,
-    "embedding_noise_std": 0.02,
-    "use_section_attention": True,   # Attention over the 3 text sections
-    "struct_encoder_dim": 16,        # structured branch: 40 → 16
-    "fusion_dims": [32, 16],         # fusion_input = (3+1)×8 + 16 = 48 → 32 → 16 → 3
-    "dropout_embedding": 0.45,
-    "dropout_fusion": 0.45,
-    "num_classes": 3,
-}
-
-NN_CONFIG_LARGE = {                  # Large (≥ 600 cases) — ~150 K params
-    "embedding_hidden_dim": 0,       # Single projection 3072 → 16
+NN_CONFIG = {
+    "embedding_hidden_dim": 0,       # Single projection 3072 → 16 (no hidden layer)
     "embedding_output_dim": 16,
     "embedding_noise_std": 0.02,
     "use_section_attention": True,   # Attention over the 3 text sections
-    "struct_encoder_dim": 24,        # structured branch: 40 → 24
+    "struct_encoder_dim": 24,        # Structured branch: 40 → 24
     "fusion_dims": [64, 32],         # fusion_input = (3+1)×16 + 24 = 88 → 64 → 32 → 3
     "dropout_embedding": 0.50,
     "dropout_fusion": 0.50,
     "num_classes": 3,
 }
 
-# ─── Training Configurations ─────────────────────────────────────────────────────
-# Base (small): fast convergence, no label smoothing.
-# Medium / Large: lower LR, larger batch, higher weight-decay, label smoothing.
+# ─── Training Configuration ──────────────────────────────────────────────────────
 # User-settable UI params (epochs, learning_rate, early_stopping_patience)
-# are applied on top of these when explicitly changed in the sidebar.
+# are applied on top of these defaults when changed in the sidebar.
 
-TRAINING_CONFIG = {                  # Small / backward-compatible default
-    "epochs": 200,
-    "batch_size": 16,
-    "learning_rate": 1e-3,
-    "weight_decay": 1e-4,
-    "lr_scheduler_patience": 15,
-    "lr_scheduler_factor": 0.5,
-    "early_stopping_patience": 30,
-    "val_split": 0.2,
-    "random_seed": 42,
-    "gradient_clip": 1.0,
-    "label_smoothing": 0.0,          # Off for small datasets
-}
-
-TRAINING_CONFIG_MEDIUM = {
-    "epochs": 300,
-    "batch_size": 32,
-    "learning_rate": 5e-4,
-    "weight_decay": 5e-4,
-    "lr_scheduler_patience": 20,
-    "lr_scheduler_factor": 0.5,
-    "early_stopping_patience": 45,
-    "val_split": 0.2,
-    "random_seed": 42,
-    "gradient_clip": 1.0,
-    "label_smoothing": 0.1,          # Prevents overconfident predictions
-}
-
-TRAINING_CONFIG_LARGE = {
+TRAINING_CONFIG = {
     "epochs": 400,
     "batch_size": 32,
     "learning_rate": 3e-4,
-    "weight_decay": 2e-3,            # Increased from 1e-3: stronger L2 against overfitting
+    "weight_decay": 2e-3,
     "lr_scheduler_patience": 25,
     "lr_scheduler_factor": 0.5,
     "early_stopping_patience": 60,
-    "val_split": 0.25,               # Increased from 0.2: larger val set for reliable monitoring
+    "val_split": 0.25,
     "random_seed": 42,
     "gradient_clip": 1.0,
-    "label_smoothing": 0.1,          # Prevents overconfident predictions
-    "mixup_alpha": 0.2,              # Mixup augmentation: interpolates embedding pairs
+    "label_smoothing": 0.1,
+    "mixup_alpha": 0.2,
 }
 
 # ─── UI Configuration ───────────────────────────────────────────────────────────

@@ -168,12 +168,12 @@ EMBEDDING_SECTION_LABELS = {
 # Parameter accounting (emb_out=16, struct_enc=24, fusion=[64,32]):
 #   3 encoders:   3 × (3072×16 + 16)         =  147 504
 #   attention:    16 + 16                     =       32
-#   struct_enc:   40×24 + 24                  =      984
+#   struct_enc:   40×24 + 24                  =      984   (40 structured features)
 #   fusion 1:     (4×16 + 24)×64 + 64        =    7 232
 #   fusion 2:     64×32 + 32                 =    2 080
 #   classifier:   32×3  + 3                  =       99
 #   ──────────────────────────────────────────────────
-#   Total                                    ≈  158 000
+#   Total                                    ≈  157 931
 
 NN_CONFIG = {
     "embedding_hidden_dim": 0,       # Single projection 3072 → 16 (no hidden layer)

@@ -46,7 +46,7 @@ OPENAI_RETRY_DELAY_SEC = 2.0
 
 # ─── Parallelization ────────────────────────────────────────────────────────────
 # Number of parallel extraction workers (each worker = 1 OGH-Urteil gleichzeitig).
-# Embeddings within each file are always parallelized (3 calls gleichzeitig).
+# Embeddings within each file are always parallelized (2 calls gleichzeitig).
 # Empfehlung: 5 Workers bei Tier-1 OpenAI-Account (10k RPM).
 PARALLEL_WORKERS = 500
 
@@ -138,12 +138,9 @@ BEWEISMITTEL_TYPEN = [
 ]
 
 # ─── Text Sections for Embeddings ───────────────────────────────────────────────
-# Nur diese drei Abschnitte fließen als Embeddings ins Modell ein:
+# Genau zwei Abschnitte fließen als Embeddings ins Modell ein:
 # - Kläger-Vorbringen: Was begehrt der Kläger?
 # - Beklagten-Vorbringen: Welche Einwendungen macht der Beklagte?
-# - Aufgenommene Beweise: Welche Beweise wurden vom Gericht aufgenommen?
-#   (faktische Beschreibung ohne Bewertung, wird per GPT aus Beweiswürdigung
-#    und Feststellungen generiert)
 #
 # Beweiswürdigung, Feststellungen und rechtliche Beurteilung sind KEIN Input —
 # sie sind Teil des Outputs bzw. der richterlichen Entscheidungsfindung.
@@ -155,7 +152,6 @@ EMBEDDING_SECTIONS = [
 EMBEDDING_SECTION_LABELS = {
     "klaegervorbringen": "Kläger-Vorbringen",
     "beklagtenvorbringen": "Beklagten-Vorbringen",
-    "aufgenommene_beweise": "Aufgenommene Beweise",
 }
 
 # ─── Neural Network Architecture for 10 000-ruling dataset ──────────────────────
@@ -180,9 +176,9 @@ EMBEDDING_SECTION_LABELS = {
 #   attention:    128×1 + 1                          =      129   ← learned
 #   fusion:       640×256+256 + LN(256)              =  165 120   ← learned
 #                 256×128+128 + LN(128)              =   33 152   ← learned
-#   classifier:   128×3 + 3                          =      387   ← learned
+#   classifier:   128×2 + 2                          =      258   ← learned (ordinal: 2 thresholds)
 #   ──────────────────────────────────────────────────────────────
-#   Total                                             ≈ 1 837 956  (~230 params/example @ 8 000 training)
+#   Total                                             ≈ 1 837 827  (~230 params/example @ 8 000 training)
 #
 # Fusion input breakdown:
 #   kl_enc(128) + bk_enc(128) + diff(128) + prod(128) + attended(128) = 640

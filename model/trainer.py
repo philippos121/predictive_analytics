@@ -16,7 +16,6 @@ from torch.utils.data import DataLoader
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
-    ENCODER_FILE,
     KNN_FILE,
     KNN_THRESHOLD,
     MODEL_CHECKPOINT,
@@ -303,7 +302,6 @@ class LitigationTrainer:
         )
 
         best_val_acc = 0.0
-        best_val_loss = float("inf")
         best_state_dict = None
 
         # ── Training Loop ────────────────────────────────────────────────────────
@@ -381,7 +379,6 @@ class LitigationTrainer:
             metric = val_acc if val_loader else train_acc
             if metric > best_val_acc:
                 best_val_acc = metric
-                best_val_loss = monitor_loss
                 best_state_dict = {k: v.clone() for k, v in model.state_dict().items()}
                 self.history["best_val_acc"] = best_val_acc
                 self.history["best_epoch"] = epoch

@@ -46,12 +46,15 @@ class EmbeddingEncoder(nn.Module):
     """
     Per-section embedding encoder.
 
-    hidden_dim > 0 → two-layer MLP (original behavior, good for small datasets).
+    hidden_dim > 0 → two-layer MLP: input → hidden → output.
+                     Adds nonlinear selective refinement at the second step;
+                     preferred for larger datasets (7 500+ examples) where
+                     the model can learn the class-relevant directions in the
+                     3072-dim embedding space without memorising training data.
     hidden_dim = 0 → single linear projection directly to output_dim.
                      Halves the dominant parameter count (3072 × hidden vs
-                     3072 × output), which drastically reduces overfitting for
-                     larger datasets where the pretrained embeddings are already
-                     rich enough.
+                     3072 × output); used for small datasets where the full
+                     two-layer encoder would overfit.
 
     noise_std > 0 → Gaussian noise injected at input (training only).
     """
@@ -251,8 +254,8 @@ class LitigationClassifier(nn.Module):
             struct_features: (batch, structured_dim) tensor or None
 
         Returns:
-            logits: (batch, 3)
-            probs: (batch, 3) — softmax probabilities
+            threshold_logits: (batch, 2) — logits for P(≥1) and P(≥2)
+            probs: (batch, 3) — [P(Unterliegen), P(Teilweise), P(Obsiegen)]
         """
         # Encode each text section
         encoded_sections = [

@@ -338,10 +338,7 @@ class LitigationTrainer:
 
             # LR schedule
             monitor_loss = val_loss if val_loader else avg_train_loss
-            if use_cosine:
-                scheduler.step()
-            else:
-                scheduler.step(monitor_loss)
+            scheduler.step()
 
             # SWA snapshot collection
             if use_swa and epoch >= swa_start:

@@ -164,30 +164,33 @@ EMBEDDING_SECTION_LABELS = {
 # dominant parameter cost (2 × 3072 × emb_output_dim) small.
 # No structured features — embeddings only (klaeger + beklagter).
 #
-# Encoders are FROZEN (random projection) — only attention + fusion are trained.
+# Encoders are FROZEN (random projection) — only attention + classifier are trained.
 # A learned 3072→k projection has enough freedom to memorise every training
 # example regardless of dropout / weight-decay strength.  Freezing removes this
 # source of memorisation entirely; the fixed random projection still preserves
 # geometric structure (Johnson-Lindenstrauss) so classification remains possible.
 #
-# Learnable parameter accounting (emb_out=32, freeze_encoders=True, fusion=[64]):
+# NO hidden fusion layer (fusion_dims=[]) — direct linear classification in the
+# attended random projection space.  This is essentially attended logistic regression
+# over 96 dims, making memorisation near-impossible with only 324 trainable params.
+#
+# Learnable parameter accounting (emb_out=32, freeze_encoders=True, fusion=[]):
 #   2 encoders:   FROZEN  (196 672 params, not trained)
 #   attention:    32×1 + 1                      =       33   ← learnable
-#   fusion:       (2+1)×32×64 + 64+64+64       =    6 336   ← learnable
-#   classifier:   64×3 + 3                      =      195   ← learnable
+#   classifier:   (2+1)×32×3 + 3               =      291   ← learnable
 #   ──────────────────────────────────────────────────────────
-#   Total learnable                              ≈    6 564   (~8.8 params/example @ 750 training)
+#   Total learnable                              ≈      324   (~0.43 params/example @ 750 training)
 
 NN_CONFIG = {
     "embedding_hidden_dim": 0,       # Single projection 3072 → 32
     "embedding_output_dim": 32,      # larger: frozen projection needs more dims
     "embedding_noise_std": 0.0,      # no noise needed on frozen encoders
-    "freeze_encoders": True,         # KEY: fixed random projection, only fusion trained
+    "freeze_encoders": True,         # KEY: fixed random projection, only attention trained
     "use_section_attention": True,   # Attention over the 2 text sections
     "structured_dim": 0,             # No structured features
-    "fusion_dims": [64],             # fusion_input = (2+1)×32 = 96 → 64 → 3
+    "fusion_dims": [],               # NO hidden layer — direct 96→3 linear classifier
     "dropout_embedding": 0.0,        # frozen encoders cannot overfit
-    "dropout_fusion": 0.50,
+    "dropout_fusion": 0.0,           # no dropout needed on a linear classifier
     "num_classes": 3,
 }
 

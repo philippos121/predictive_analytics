@@ -158,62 +158,63 @@ EMBEDDING_SECTION_LABELS = {
     "aufgenommene_beweise": "Aufgenommene Beweise",
 }
 
-# ─── Neural Network Configuration ───────────────────────────────────────────────
-# text-embedding-3-large outputs 3072-dim vectors that are already highly semantic.
-# A SINGLE linear projection per section (embedding_hidden_dim = 0) keeps the
-# dominant parameter cost (2 × 3072 × emb_output_dim) small.
-# No structured features — embeddings only (klaeger + beklagter).
+# ─── Neural Network Architecture for 10 000-ruling dataset ──────────────────────
+# With ~8 000 training examples the model can LEARN the 3072→128 projection
+# instead of relying on a frozen random one.  A learned projection finds the
+# class-relevant directions in the embedding space; a random one does not
+# (we saw train 50 % / val 45 % with freeze_encoders=True, confirming this).
 #
-# Encoders are FROZEN (random projection) — only attention + classifier are trained.
-# A learned 3072→k projection has enough freedom to memorise every training
-# example regardless of dropout / weight-decay strength.  Freezing removes this
-# source of memorisation entirely; the fixed random projection still preserves
-# geometric structure (Johnson-Lindenstrauss) so classification remains possible.
+# Full semantic richness of the 3072-dim OpenAI embeddings is preserved: the
+# learned encoder compresses to 128 dims while keeping the most predictive
+# information, unlike the frozen random projection which discards most of it.
 #
-# NO hidden fusion layer (fusion_dims=[]) — direct linear classification in the
-# attended random projection space.  This is essentially attended logistic regression.
-# 32 dims was too lossy (destroyed signal). 128 dims preserves more structure
-# while keeping trainable params tiny (no memorisation possible).
-# Johnson-Lindenstrauss: ~112 dims needed to preserve pairwise distances for n=1000.
+# Parameter budget  (emb_out=128, freeze_encoders=False, fusion=[256,128]):
+#   2 encoders:   2 × (3072×128 + 128)             =  786 688   ← learned
+#   attention:    128×1 + 1                          =      129   ← learned
+#   fusion:       384×256+256 + LN(256)              =   99 072   ← learned
+#                 256×128+128 + LN(128)              =   33 152   ← learned
+#   classifier:   128×3 + 3                          =      387   ← learned
+#   ──────────────────────────────────────────────────────────────
+#   Total                                             ≈  919 428   (~115 params/example @ 8 000 training)
 #
-# Learnable parameter accounting (emb_out=128, freeze_encoders=True, fusion=[]):
-#   2 encoders:   FROZEN  (786 432 params, not trained)
-#   attention:    128×1 + 1                     =      129   ← learnable
-#   classifier:   (2+1)×128×3 + 3              =    1 155   ← learnable
-#   ──────────────────────────────────────────────────────────
-#   Total learnable                              ≈    1 284   (~1.7 params/example @ 750 training)
+# Regularisation mix for 115 params/example:
+#   • dropout_embedding 0.20  — encoder regularisation
+#   • dropout_fusion    0.35  — fusion regularisation
+#   • Gaussian noise std 0.01 — stochastic input perturbation
+#   • weight_decay 1e-3, label_smoothing 0.1, mixup 0.3
 
 NN_CONFIG = {
-    "embedding_hidden_dim": 0,       # Single projection 3072 → 128
-    "embedding_output_dim": 128,     # 128 random dims preserve enough JL structure
-    "embedding_noise_std": 0.0,      # no noise needed on frozen encoders
-    "freeze_encoders": True,         # KEY: fixed random projection, only attention trained
-    "use_section_attention": True,   # Attention over the 2 text sections
-    "structured_dim": 0,             # No structured features
-    "fusion_dims": [],               # NO hidden layer — direct 384→3 linear classifier
-    "dropout_embedding": 0.0,        # frozen encoders cannot overfit
-    "dropout_fusion": 0.0,           # no dropout needed on a linear classifier
+    "embedding_hidden_dim": 0,        # single-layer encoder: 3072 → 128
+    "embedding_output_dim": 128,      # learned — finds class-relevant directions
+    "embedding_noise_std": 0.01,      # light Gaussian noise on raw embeddings
+    "freeze_encoders": False,         # LEARNED projection (needs 7 500+ training cases)
+    "use_section_attention": True,    # attention over klaeger + beklagter
+    "structured_dim": 0,              # embeddings only
+    "fusion_dims": [256, 128],        # richer fusion head appropriate for 10k dataset
+    "dropout_embedding": 0.20,
+    "dropout_fusion": 0.35,
     "num_classes": 3,
 }
 
 # ─── Training Configuration ──────────────────────────────────────────────────────
+# Tuned for ~10 000 labeled rulings (8 000 train / 2 000 val with val_split=0.20).
 # User-settable UI params (epochs, learning_rate, early_stopping_patience)
 # are applied on top of these defaults when changed in the sidebar.
 
 TRAINING_CONFIG = {
-    "epochs": 200,
-    "batch_size": 32,
-    "learning_rate": 3e-4,
-    "weight_decay": 5e-4,            # light: only ~6.5 k params are trainable
-    "lr_scheduler_patience": 25,
+    "epochs": 300,
+    "batch_size": 64,                 # larger batch for larger dataset
+    "learning_rate": 2e-4,            # slightly lower LR for larger learned encoder
+    "weight_decay": 1e-3,             # stronger L2 to regularise ~920k params
+    "lr_scheduler_patience": 30,
     "lr_scheduler_factor": 0.5,
-    "early_stopping_patience": 40,   # stop 40 epochs after val acc peaks
-    "use_swa": False,                 # disabled: tiny head converges fast, SWA averages overfit snapshots
-    "val_split": 0.25,
+    "early_stopping_patience": 50,
+    "use_swa": False,
+    "val_split": 0.20,                # 20 % val → 8 000 training examples at 10k
     "random_seed": 42,
     "gradient_clip": 1.0,
     "label_smoothing": 0.1,
-    "mixup_alpha": 0.2,
+    "mixup_alpha": 0.3,
 }
 
 # ─── UI Configuration ───────────────────────────────────────────────────────────

@@ -20,6 +20,7 @@ import argparse
 import json
 import shutil
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -43,6 +44,7 @@ from config import (
 client = openai.OpenAI()
 
 BACKUP_FILE = EMBEDDINGS_FILE.parent / "embeddings_backup.h5"
+_h5_lock = threading.Lock()  # h5py is not thread-safe for concurrent writes
 
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
@@ -80,8 +82,8 @@ def _load_already_done(path: Path) -> set[str]:
 
 
 def _save_case(path: Path, case_id: str, vectors: dict[str, np.ndarray]) -> None:
-    """Append one case's embeddings to the HDF5 file (thread-safe via GIL on h5py write)."""
-    with h5py.File(path, "a") as f:
+    """Append one case's embeddings to the HDF5 file (serialised via lock)."""
+    with _h5_lock, h5py.File(path, "a") as f:
         if case_id in f:
             del f[case_id]
         grp = f.create_group(case_id)
@@ -135,13 +137,22 @@ def main() -> None:
     if not cases_with_sections:
         sys.exit("No cases with sections found — nothing to embed.")
 
-    # ── Backup ────────────────────────────────────────────────────────────────
+    # ── Backup / fresh-start logic ────────────────────────────────────────────
+    # First run (no backup yet): MOVE the old file out of the way so that
+    # _load_already_done finds an empty target and re-embeds everything.
+    # Resume run (backup already exists): the current embeddings.h5 already
+    # contains only new-model vectors — skip the ones already written.
     if EMBEDDINGS_FILE.exists() and not args.no_backup:
-        print(f"\nBacking up {EMBEDDINGS_FILE.name} → {BACKUP_FILE.name} ...", end=" ", flush=True)
-        shutil.copy2(EMBEDDINGS_FILE, BACKUP_FILE)
-        print("done.")
+        if not BACKUP_FILE.exists():
+            print(f"\nMoving {EMBEDDINGS_FILE.name} → {BACKUP_FILE.name} ...", end=" ", flush=True)
+            shutil.move(str(EMBEDDINGS_FILE), BACKUP_FILE)
+            print("done.")
+        else:
+            print(f"\nBackup {BACKUP_FILE.name} already exists — resuming previous run.")
 
     # ── Skip already-done cases ───────────────────────────────────────────────
+    # After a move the target file no longer exists → set is empty → all cases embedded.
+    # On resume the target contains only vectors from the new model → safe to skip.
     already_done = _load_already_done(EMBEDDINGS_FILE)
     todo = [c for c in cases_with_sections if c["case_id"] not in already_done]
 

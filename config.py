@@ -213,7 +213,7 @@ SECTION_LABELS = {
 NN_CONFIG = {
     "hidden_dims": [128, 128],       # Hidden layers for structured encoder
     "fusion_dims": [64],             # Fusion layer(s) before classifier
-    "dropout": 0.3,
+    "dropout": 0.1,                  # Reduced for 28K-param structured model (was 0.3 for embeddings)
     "num_classes": 3,                # win / partial / loss
 }
 

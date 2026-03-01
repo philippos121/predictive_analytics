@@ -41,12 +41,12 @@ class EarlyStopping:
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0
-        self.best_loss = float("inf")
+        self.best_score = -float("inf")
         self.should_stop = False
 
-    def __call__(self, val_loss: float) -> bool:
-        if val_loss < self.best_loss - self.min_delta:
-            self.best_loss = val_loss
+    def __call__(self, score: float) -> bool:
+        if score > self.best_score + self.min_delta:
+            self.best_score = score
             self.counter = 0
         else:
             self.counter += 1
@@ -196,7 +196,7 @@ class LitigationTrainer:
 
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
-            mode="min",
+            mode="max",
             factor=self.config["lr_scheduler_factor"],
             patience=self.config["lr_scheduler_patience"],
             verbose=False,
@@ -243,21 +243,19 @@ class LitigationTrainer:
             # Validate
             val_loss, val_acc = self._evaluate(model, val_loader, criterion)
 
-            # LR schedule
-            monitor_loss = val_loss if val_loader else avg_train_loss
-            scheduler.step(monitor_loss)
-
             # Track history
             self.history["train_loss"].append(avg_train_loss)
             self.history["val_loss"].append(val_loss if val_loader else avg_train_loss)
             self.history["train_acc"].append(train_acc)
             self.history["val_acc"].append(val_acc if val_loader else train_acc)
 
+            # Monitor val_acc for LR schedule + early stopping
+            monitor_metric = val_acc if val_loader else train_acc
+            scheduler.step(monitor_metric)
+
             # Best model tracking
-            metric = val_acc if val_loader else train_acc
-            if metric > best_val_acc:
-                best_val_acc = metric
-                best_val_loss = monitor_loss
+            if monitor_metric > best_val_acc:
+                best_val_acc = monitor_metric
                 best_state_dict = {k: v.clone() for k, v in model.state_dict().items()}
                 self.history["best_val_acc"] = best_val_acc
                 self.history["best_epoch"] = epoch
@@ -277,7 +275,7 @@ class LitigationTrainer:
                 )
 
             # Early stopping
-            if early_stopping(monitor_loss):
+            if early_stopping(monitor_metric):
                 self._log(
                     phase="early_stop",
                     epoch=epoch,

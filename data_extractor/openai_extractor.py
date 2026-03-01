@@ -267,12 +267,11 @@ class OpenAIExtractor:
         wait=wait_exponential(multiplier=1, min=2, max=30),
         stop=stop_after_attempt(5),
     )
-    def _chat_completion(self, messages: list[dict], temperature: float = 0.0) -> str:
+    def _chat_completion(self, messages: list[dict]) -> str:
         """Call GPT-5-nano with retry logic."""
         response = self.client.chat.completions.create(
             model=OPENAI_EXTRACTION_MODEL,
             messages=messages,
-            temperature=temperature,
             response_format={"type": "json_object"},
         )
         return response.choices[0].message.content
@@ -698,7 +697,6 @@ class AsyncBatchExtractor:
         self,
         messages: list[dict],
         semaphore: asyncio.Semaphore,
-        temperature: float = 0.0,
         max_retries: int = 5,
     ) -> str:
         """Single async chat completion with semaphore-based concurrency limit and retry."""
@@ -708,7 +706,6 @@ class AsyncBatchExtractor:
                     response = await self.async_client.chat.completions.create(
                         model=OPENAI_EXTRACTION_MODEL,
                         messages=messages,
-                        temperature=temperature,
                         response_format={"type": "json_object"},
                     )
                     return response.choices[0].message.content

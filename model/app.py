@@ -402,20 +402,20 @@ with tab_train:
             neuronale Netz um.
             """)
         else:
-            from config import EMBEDDING_DIM_USED, NN_CONFIG as _nn_cfg
+            from config import EMBEDDING_DIM_USED, NN_CONFIG as _nn_cfg, PCA_DIM
             st.markdown(f"""
             **Aktiver Modus: Hybrid-Neuronales Netz** (≥ {KNN_THRESHOLD} Fälle)
-            - **Embedding-Input**: 2 × {EMBEDDING_DIM_USED}-dim (Kläger + Beklagter Vorbringen)
-            - **Embedding-Encoder**: {EMBEDDING_DIM_USED} → {_nn_cfg['embedding_hidden_dim']} → {_nn_cfg['embedding_output_dim']} (pro Sektion)
+            - **Embedding-Input**: 2 × {EMBEDDING_DIM_USED}-dim → PCA → 2 × {PCA_DIM}-dim (Kläger + Beklagter)
+            - **Embedding-Encoder**: {PCA_DIM} → {_nn_cfg['embedding_hidden_dim']} → {_nn_cfg['embedding_output_dim']} (pro Sektion)
             - **Structured Encoder**: {fe.feature_dim} → {_nn_cfg['structured_hidden_dim']} (Metadaten)
             - **Fusion**: Concat → {_nn_cfg['fusion_dims']} → 3 Klassen
             - **Loss**: CrossEntropyLoss mit Klassen-Gewichtung
             - **Optimizer**: AdamW mit ReduceLROnPlateau
-            - **Regularisierung**: LayerNorm, Dropout ({_nn_cfg['dropout_fusion']}), Gradient Clipping, Early Stopping
-            - **Parameter gesamt**: ~155 K
+            - **Regularisierung**: PCA, LayerNorm, Dropout ({_nn_cfg['dropout_fusion']}), Gradient Clipping, Early Stopping
+            - **Parameter gesamt**: ~62 K
 
             **Input:**
-            - Text-Embeddings (text-embedding-3-large, truncated auf {EMBEDDING_DIM_USED} dim)
+            - Text-Embeddings (text-embedding-3-large, {EMBEDDING_DIM_USED}-dim → PCA {PCA_DIM}-dim)
             - Strukturierte Metadaten (Streitwert, Instanz, Anspruchsart, Einwendungen)
 
             **Output:** 3 Klassen (Unterliegen / Teilweise / Obsiegen)
@@ -473,10 +473,12 @@ with tab_train:
 
             elif phase == "prepared":
                 n_emb = kwargs.get("n_with_embeddings", "?")
+                pca_var = kwargs.get("pca_variance_retained")
+                pca_str = f" | PCA Varianz: {pca_var:.1%}" if pca_var else ""
                 msg = (
                     f'[OK]  Train: {kwargs["train_size"]} | Val: {kwargs["val_size"]} | '
                     f'Structured: {kwargs["feature_dim"]} | '
-                    f'Mit Embeddings: {n_emb}'
+                    f'Mit Embeddings: {n_emb}{pca_str}'
                 )
                 st.session_state.training_log.append(msg)
 

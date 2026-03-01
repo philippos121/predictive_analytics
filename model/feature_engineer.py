@@ -18,6 +18,7 @@ from typing import Optional
 
 import numpy as np
 import torch
+from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -26,6 +27,8 @@ from config import (
     DEFENSE_TYPES,
     EMBEDDING_DIM_USED,
     EMBEDDING_SECTIONS,
+    PCA_DIM,
+    PCA_FILE,
     SCALER_FILE,
     TRAINING_CONFIG,
 )
@@ -159,6 +162,86 @@ class FeatureEngineer:
         self.is_fitted = True
 
 
+# ─── Embedding PCA ───────────────────────────────────────────────────────────────
+
+class EmbeddingPCA:
+    """
+    PCA dimensionality reduction for text embeddings.
+
+    Fits one shared PCA across all embedding sections (kläger + beklagter),
+    reducing from EMBEDDING_DIM_USED (1024) to PCA_DIM (128).
+    This addresses the curse of dimensionality: with ~6400 training samples
+    and 2×1024 input dims, the model has too few examples per dimension.
+    PCA reduces to 2×128 = 256 dims → ~25 examples per dimension.
+    """
+
+    def __init__(self, n_components: int = PCA_DIM):
+        self.n_components = n_components
+        self.pca = PCA(n_components=n_components)
+        self.is_fitted = False
+        self.explained_variance_ratio_sum: float = 0.0
+
+    def fit(
+        self,
+        embeddings_dict: dict[str, dict[str, np.ndarray]],
+        cases: list[dict],
+    ) -> "EmbeddingPCA":
+        """
+        Fit PCA on all training embeddings (pooled across sections).
+
+        All sections share one PCA so that kläger and beklagter embeddings
+        live in the same reduced space.
+        """
+        all_vecs = []
+        for case in cases:
+            cid = case["case_id"]
+            if cid not in embeddings_dict:
+                continue
+            emb = embeddings_dict[cid]
+            for section in EMBEDDING_SECTIONS:
+                if section in emb:
+                    vec = truncate_embedding(emb[section])
+                    all_vecs.append(vec)
+
+        if len(all_vecs) < self.n_components:
+            raise ValueError(
+                f"Zu wenige Embeddings ({len(all_vecs)}) für PCA "
+                f"mit {self.n_components} Komponenten."
+            )
+
+        X = np.stack(all_vecs)  # (N_total, 1024)
+        self.pca.fit(X)
+        self.is_fitted = True
+        self.explained_variance_ratio_sum = float(
+            self.pca.explained_variance_ratio_.sum()
+        )
+        return self
+
+    def transform(self, vec: np.ndarray) -> np.ndarray:
+        """Transform a single 1024-dim embedding to PCA_DIM dimensions."""
+        if not self.is_fitted:
+            raise RuntimeError("EmbeddingPCA not fitted. Call fit() first.")
+        return self.pca.transform(vec.reshape(1, -1))[0].astype(np.float32)
+
+    def save(self, path: Path = PCA_FILE) -> None:
+        with open(path, "wb") as f:
+            pickle.dump({
+                "pca": self.pca,
+                "n_components": self.n_components,
+                "explained_variance_ratio_sum": self.explained_variance_ratio_sum,
+            }, f)
+
+    def load(self, path: Path = PCA_FILE) -> None:
+        with open(path, "rb") as f:
+            data = pickle.load(f)
+        self.pca = data["pca"]
+        self.n_components = data["n_components"]
+        self.explained_variance_ratio_sum = data.get(
+            "explained_variance_ratio_sum", 0.0
+        )
+        self.is_fitted = True
+
+
 # ─── Embedding Utilities ─────────────────────────────────────────────────────────
 
 def truncate_embedding(vec: np.ndarray, dim: int = EMBEDDING_DIM_USED) -> np.ndarray:
@@ -174,17 +257,23 @@ def truncate_embedding(vec: np.ndarray, dim: int = EMBEDDING_DIM_USED) -> np.nda
 def prepare_embeddings_for_case(
     emb_dict: dict[str, np.ndarray],
     dim: int = EMBEDDING_DIM_USED,
+    pca: Optional[EmbeddingPCA] = None,
 ) -> list[np.ndarray]:
     """
     Prepare embedding vectors for a single case.
-    Returns list of truncated embedding arrays, one per EMBEDDING_SECTIONS entry.
+    Returns list of embedding arrays, one per EMBEDDING_SECTIONS entry.
+    If pca is provided, applies PCA reduction after truncation.
     """
     result = []
     for section in EMBEDDING_SECTIONS:
         if section in emb_dict:
-            result.append(truncate_embedding(emb_dict[section], dim))
+            vec = truncate_embedding(emb_dict[section], dim)
+            if pca is not None and pca.is_fitted:
+                vec = pca.transform(vec)
+            result.append(vec)
         else:
-            result.append(np.zeros(dim, dtype=np.float32))
+            out_dim = pca.n_components if (pca is not None and pca.is_fitted) else dim
+            result.append(np.zeros(out_dim, dtype=np.float32))
     return result
 
 
@@ -195,7 +284,7 @@ class LitigationDataset(torch.utils.data.Dataset):
     PyTorch Dataset for litigation cases (embeddings + structured features).
 
     Each item returns:
-    - embeddings: list of tensors (one per section), each shape (EMBEDDING_DIM_USED,)
+    - embeddings: list of tensors (one per section), each shape (emb_dim,)
     - structured: tensor of shape (feature_dim,)
     - label: int (0, 1, 2)
     """
@@ -205,10 +294,12 @@ class LitigationDataset(torch.utils.data.Dataset):
         cases: list[dict],
         embeddings_dict: dict[str, dict[str, np.ndarray]],
         structured_features: np.ndarray,
+        pca: Optional[EmbeddingPCA] = None,
     ):
         self.cases = cases
         self.embeddings_dict = embeddings_dict
         self.structured_features = structured_features
+        self.pca = pca
 
         # Filter to cases that have all required data
         self.valid_indices = [
@@ -225,11 +316,11 @@ class LitigationDataset(torch.utils.data.Dataset):
         case = self.cases[case_idx]
         case_id = case["case_id"]
 
-        # Load and truncate embeddings for each section
+        # Load, truncate, and optionally PCA-reduce embeddings
         emb_data = self.embeddings_dict[case_id]
         embeddings = [
             torch.tensor(vec, dtype=torch.float32)
-            for vec in prepare_embeddings_for_case(emb_data)
+            for vec in prepare_embeddings_for_case(emb_data, pca=self.pca)
         ]
 
         # Structured features
@@ -249,6 +340,7 @@ def prepare_dataset(
     feature_engineer: FeatureEngineer,
     val_split: float = TRAINING_CONFIG["val_split"],
     random_seed: int = TRAINING_CONFIG["random_seed"],
+    pca: Optional[EmbeddingPCA] = None,
 ) -> tuple["LitigationDataset", "LitigationDataset", "LitigationDataset"]:
     """
     Prepare train, validation, and full datasets.
@@ -259,7 +351,9 @@ def prepare_dataset(
     # Encode structured features
     structured_features = feature_engineer.fit_transform(cases)
 
-    full_dataset = LitigationDataset(cases, embeddings_dict, structured_features)
+    full_dataset = LitigationDataset(
+        cases, embeddings_dict, structured_features, pca=pca,
+    )
 
     if len(full_dataset) == 0:
         raise ValueError("No valid labeled cases with embeddings found.")

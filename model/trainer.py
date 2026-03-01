@@ -21,11 +21,13 @@ from config import (
     KNN_FILE,
     KNN_THRESHOLD,
     MODEL_CHECKPOINT,
+    PCA_FILE,
     SCALER_FILE,
     TRAINING_CONFIG,
     TRAINING_HISTORY_FILE,
 )
 from model.feature_engineer import (
+    EmbeddingPCA,
     FeatureEngineer,
     LitigationDataset,
     collate_fn,
@@ -76,6 +78,7 @@ class LitigationTrainer:
         self.model: Optional[LitigationClassifier] = None
         self.knn: Optional[KNNLitigationPredictor] = None
         self.feature_engineer = FeatureEngineer()
+        self.embedding_pca = EmbeddingPCA()
         self.history: dict = {
             "train_loss": [],
             "val_loss": [],
@@ -95,13 +98,17 @@ class LitigationTrainer:
         cases: list[dict],
         embeddings_dict: dict,
     ) -> tuple:
-        """Prepare datasets for training."""
+        """Prepare datasets for training (includes PCA fitting on embeddings)."""
+        # Fit PCA on all training embeddings
+        self.embedding_pca.fit(embeddings_dict, cases)
+
         train_ds, val_ds, full_ds = prepare_dataset(
             cases,
             embeddings_dict,
             self.feature_engineer,
             val_split=self.config["val_split"],
             random_seed=self.config["random_seed"],
+            pca=self.embedding_pca,
         )
 
         feature_dim = self.feature_engineer.feature_dim
@@ -162,6 +169,7 @@ class LitigationTrainer:
             val_size=len(val_ds),
             feature_dim=feature_dim,
             n_with_embeddings=n_with_emb,
+            pca_variance_retained=self.embedding_pca.explained_variance_ratio_sum,
         )
 
         if len(train_ds) < 2:
@@ -442,7 +450,8 @@ class LitigationTrainer:
             raise ValueError("embeddings_dict required for neural net evaluation.")
 
         structured_features = self.feature_engineer.transform(cases)
-        full_ds = LitigationDataset(cases, embeddings_dict, structured_features)
+        pca = self.embedding_pca if self.embedding_pca.is_fitted else None
+        full_ds = LitigationDataset(cases, embeddings_dict, structured_features, pca=pca)
         loader = DataLoader(
             full_ds, batch_size=32, shuffle=False, collate_fn=collate_fn
         )
@@ -550,6 +559,9 @@ class LitigationTrainer:
 
         self.feature_engineer.save(SCALER_FILE)
 
+        if self.embedding_pca.is_fitted:
+            self.embedding_pca.save(PCA_FILE)
+
         with open(TRAINING_HISTORY_FILE, "w") as f:
             json.dump(self.history, f, indent=2)
 
@@ -599,6 +611,9 @@ class LitigationTrainer:
 
         if SCALER_FILE.exists():
             self.feature_engineer.load(SCALER_FILE)
+
+        if PCA_FILE.exists():
+            self.embedding_pca.load(PCA_FILE)
 
         return True
 

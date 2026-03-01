@@ -24,6 +24,7 @@ from config import (
     EMBEDDING_DIM_USED,
     EMBEDDING_SECTIONS,
     OUTCOME_LABELS,
+    PCA_DIM,
 )
 from model.feature_engineer import prepare_embeddings_for_case
 from model.ratg_calculator import RATGKostenrechnung
@@ -94,15 +95,21 @@ class LitigationPredictor:
             structured, dtype=torch.float32
         ).unsqueeze(0).to(self.device)
 
-        # Prepare embeddings
+        # Prepare embeddings (with PCA if available)
+        pca = self.trainer.embedding_pca
+        has_pca = pca is not None and pca.is_fitted
+        emb_dim = pca.n_components if has_pca else EMBEDDING_DIM_USED
+
         if embeddings is None:
             # No embeddings available — use zero vectors (reduced accuracy)
             emb_list = [
-                np.zeros(EMBEDDING_DIM_USED, dtype=np.float32)
+                np.zeros(emb_dim, dtype=np.float32)
                 for _ in EMBEDDING_SECTIONS
             ]
         else:
-            emb_list = prepare_embeddings_for_case(embeddings)
+            emb_list = prepare_embeddings_for_case(
+                embeddings, pca=pca if has_pca else None,
+            )
 
         emb_tensors = [
             torch.tensor(e, dtype=torch.float32).unsqueeze(0).to(self.device)

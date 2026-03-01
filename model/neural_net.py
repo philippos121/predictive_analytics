@@ -9,7 +9,7 @@ Multi-input architecture:
 3. Fusion MLP for final 3-class classification
 
 Output: 3-class (Unterliegen / Teilweise / Obsiegen)
-Total params: ~155 K (depending on embedding dim and structured feature count)
+Total params: ~31 K (PCA reduces 1024→128 per section before encoding)
 """
 
 import sys
@@ -20,18 +20,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import EMBEDDING_DIM_USED, EMBEDDING_SECTIONS, NN_CONFIG
+from config import EMBEDDING_DIM_USED, EMBEDDING_SECTIONS, NN_CONFIG, PCA_DIM
 
 
 class EmbeddingEncoder(nn.Module):
     """
     Per-section embedding encoder.
-    Compresses high-dim embedding to compact representation.
+    Compresses PCA-reduced embedding to compact representation.
     """
 
     def __init__(
         self,
-        input_dim: int = EMBEDDING_DIM_USED,
+        input_dim: int = PCA_DIM,
         hidden_dim: int = NN_CONFIG["embedding_hidden_dim"],
         output_dim: int = NN_CONFIG["embedding_output_dim"],
         dropout: float = NN_CONFIG["dropout_embedding"],
@@ -96,10 +96,10 @@ class LitigationClassifier(nn.Module):
         num_classes = config["num_classes"]
         dropout_fusion = config["dropout_fusion"]
 
-        # Per-section embedding encoders
+        # Per-section embedding encoders (input is PCA-reduced)
         self.embedding_encoders = nn.ModuleList([
             EmbeddingEncoder(
-                input_dim=EMBEDDING_DIM_USED,
+                input_dim=PCA_DIM,
                 hidden_dim=config["embedding_hidden_dim"],
                 output_dim=emb_output_dim,
                 dropout=config["dropout_embedding"],
@@ -145,7 +145,7 @@ class LitigationClassifier(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
-            embeddings: list of (batch, EMBEDDING_DIM_USED) tensors, one per section
+            embeddings: list of (batch, PCA_DIM) tensors, one per section
             structured: (batch, structured_dim) tensor
 
         Returns:
@@ -191,7 +191,8 @@ class LitigationClassifier(nn.Module):
         return {
             "total_parameters": self.count_parameters(),
             "embedding_sections": len(EMBEDDING_SECTIONS),
-            "embedding_dim_input": EMBEDDING_DIM_USED,
+            "embedding_dim_raw": EMBEDDING_DIM_USED,
+            "embedding_dim_pca": PCA_DIM,
             "embedding_dim_output": self.config["embedding_output_dim"],
             "structured_dim": self.structured_dim,
             "structured_hidden_dim": self.config["structured_hidden_dim"],

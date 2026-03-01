@@ -23,6 +23,7 @@ DATASET_FILE = EXTRACTED_DIR / "cases_dataset.json"
 EMBEDDINGS_FILE = EMBEDDINGS_DIR / "embeddings.h5"
 MODEL_CHECKPOINT = MODELS_DIR / "litigation_model.pt"
 SCALER_FILE = MODELS_DIR / "feature_scaler.pkl"
+PCA_FILE = MODELS_DIR / "embedding_pca.pkl"
 ENCODER_FILE = MODELS_DIR / "label_encoders.pkl"
 TRAINING_HISTORY_FILE = MODELS_DIR / "training_history.json"
 KNN_FILE = MODELS_DIR / "litigation_knn.pkl"
@@ -37,6 +38,7 @@ OPENAI_EXTRACTION_MODEL = "gpt-5-nano-2025-08-07"
 OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
 EMBEDDING_DIM = 3072  # Full dimension of text-embedding-3-large
 EMBEDDING_DIM_USED = 1024  # Truncated dimension for training (first N dims)
+PCA_DIM = 128  # PCA-reduced dimension per section (1024 → 128)
 
 # API rate limiting
 OPENAI_REQUEST_DELAY_SEC = 0.5       # Delay between API requests
@@ -219,14 +221,14 @@ SECTION_LABELS = {
 # ─── Neural Network Configuration ───────────────────────────────────────────────
 # Hybrid: per-section embedding encoders + structured feature encoder → fusion → 3-class.
 #
-# Each embedding section (1024-dim) is compressed to 64-dim, then all are
-# concatenated with encoded structured features and fused.
+# Embeddings are first reduced via PCA (1024 → PCA_DIM=128), then each section
+# is encoded to 64-dim and concatenated with structured features for fusion.
 #
 # Parameteranzahl ca.:
-#   2 × EmbeddingEncoder (1024→128→64): ~140 K
-#   StructuredEncoder (struct→32):       ~1 K
-#   Fusion (160→64→3):                   ~12 K
-#   Gesamt: ~155 K
+#   2 × EmbeddingEncoder (128→128→64):   ~50 K
+#   StructuredEncoder (struct→32):        ~1 K
+#   Fusion (160→64→3):                    ~11 K
+#   Gesamt: ~62 K
 NN_CONFIG = {
     "embedding_hidden_dim": 128,     # Intermediate dim per embedding encoder
     "embedding_output_dim": 64,      # Output dim per embedding encoder

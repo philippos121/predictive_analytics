@@ -7,6 +7,10 @@ Extrahiert werden: Erstgericht-Vorbringen der Parteien + Erstgericht-Entscheidun
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()  # lädt .env aus dem Projektverzeichnis
+
 # ─── Project Paths ──────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / "data"

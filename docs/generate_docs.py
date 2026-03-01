@@ -32,10 +32,9 @@ from config import (
     CLAIM_TYPES,
     DEFENSE_LABELS,
     DEFENSE_TYPES,
-    EMBEDDING_DIM,
-    EMBEDDING_SECTIONS,
     NN_CONFIG,
     OUTCOME_LABELS,
+    SECTION_LABELS,
     TRAINING_CONFIG,
 )
 
@@ -312,7 +311,7 @@ def build_title_page() -> list:
         ["Datum", datetime.now().strftime("%d. %B %Y")],
         ["Sprache", "Python 3.10+"],
         ["ML Framework", "PyTorch"],
-        ["KI-Modell", "OpenAI gpt-4o-mini + text-embedding-3-large"],
+        ["KI-Modell", "OpenAI gpt-5-nano-2025-08-07 (Structured Data)"],
         ["Klassifikation", "3-Klassen (Obsiegen / Teilweise / Unterliegen)"],
     ]
 
@@ -417,9 +416,9 @@ def build_section_1() -> list:
 
     comp_data = [
         ["Komponente", "Beschreibung", "Technologie"],
-        ["Programm 1:\nData Extractor", "Extrahiert strukturierte Rechtsdaten\nund Embeddings aus PDF-Urteilen", "Streamlit, OpenAI API,\nPyMuPDF, HDF5"],
+        ["Programm 1:\nData Extractor", "Extrahiert strukturierte Rechtsdaten\nund Legal-Analyse aus PDF-Urteilen", "Streamlit, OpenAI API,\nPyMuPDF, JSON"],
         ["Programm 2:\nML Model Trainer\n& Predictor", "Trainiert das neuronale Netz und\nberechnet Vorhersagen für neue Fälle", "PyTorch, Streamlit,\nPlotly"],
-        ["Datenspeicher", "JSON-Dataset + HDF5-Embeddings\n(lokal, kein Cloud-Speicher)", "h5py, JSON"],
+        ["Datenspeicher", "JSON-Dataset\n(lokal, kein Cloud-Speicher)", "JSON"],
         ["Dokumentation", "Dieses PDF-Dokument", "ReportLab"],
     ]
 
@@ -435,11 +434,11 @@ def build_section_1() -> list:
         ["Programmiersprache", "Python 3.10+", "Gesamtes System"],
         ["UI Framework", "Streamlit 1.36+", "Weboberfläche (lokal)"],
         ["PDF-Verarbeitung", "PyMuPDF (fitz)", "Text-Extraktion aus PDFs"],
-        ["KI-Extraktion", "OpenAI gpt-4o-mini", "Strukturierte Datenerkennung"],
-        ["Embeddings", "text-embedding-3-large (3072 dim)", "Semantische Textvektoren"],
+        ["KI-Extraktion", "OpenAI gpt-5-nano", "Strukturierte Datenerkennung"],
+        ["Legal-Analyse", "GPT-5-nano (Structured)", "Detaillierte Rechtliche Analyse"],
         ["Deep Learning", "PyTorch 2.3+", "Neuronales Netz"],
         ["Visualisierung", "Plotly, Altair", "Diagramme und Charts"],
-        ["Datenspeicher", "JSON + HDF5 (h5py)", "Persistente Datenhaltung"],
+        ["Datenspeicher", "JSON", "Persistente Datenhaltung"],
         ["Normalisierung", "scikit-learn StandardScaler", "Feature-Normalisierung"],
         ["Dokumentation", "ReportLab", "PDF-Generierung"],
     ]
@@ -500,9 +499,7 @@ def build_section_2() -> list:
 
     config_data = [
         ["Parameter", "Standard", "Beschreibung"],
-        ["OPENAI_EXTRACTION_MODEL", "gpt-4o-mini", "OpenAI-Modell für Datenextraktion"],
-        ["OPENAI_EMBEDDING_MODEL", "text-embedding-3-large", "Embedding-Modell"],
-        ["EMBEDDING_DIM", str(EMBEDDING_DIM), "Embedding-Dimensionen"],
+        ["OPENAI_EXTRACTION_MODEL", "gpt-5-nano-2025-08-07", "OpenAI-Modell für Datenextraktion + Legal-Analyse"],
         ["epochs", str(TRAINING_CONFIG["epochs"]), "Max. Training-Epochen"],
         ["learning_rate", str(TRAINING_CONFIG["learning_rate"]), "Lernrate (AdamW)"],
         ["batch_size", str(TRAINING_CONFIG["batch_size"]), "Batch-Größe"],
@@ -592,33 +589,27 @@ def build_section_3() -> list:
     story.append(t2)
 
     story.append(spacer(0.4))
-    story.append(Paragraph("3.4 Text-Embeddings (text-embedding-3-large)", S["h2"]))
+    story.append(Paragraph("3.4 Strukturierte Legal-Analyse (GPT-5-nano)", S["h2"]))
     story.append(Paragraph(
-        f"Für jeden Fall werden fünf Textabschnitte in Vektoren der Dimension {EMBEDDING_DIM} "
-        "umgewandelt (text-embedding-3-large). Diese semantischen Vektoren ermöglichen dem "
-        "neuronalen Netz, inhaltliche Muster zu erkennen, die über strukturierte Merkmale hinausgehen.",
+        "Für jeden Fall wird eine detaillierte strukturierte Analyse der rechtlichen "
+        "Argumente, Anspruchsgrundlagen und Einwendungen extrahiert. Diese strukturierten "
+        "Features ersetzen die bisherigen Text-Embeddings und dienen als primärer Training-Input.",
         S["body"],
     ))
 
-    emb_data = [["Abschnitt", "Inhalt"]] + [
-        [sec, f"Volltext: {sec.replace('_', ' ').replace('w ', 'wü').title()}"]
-        for sec in EMBEDDING_SECTIONS
+    la_sections = [
+        ["fall_metadaten", "Rechtsgebiet, Verbrauchergeschäft, Streitwert"],
+        ["klaegervorbringen_anspruchsgrundlagen", "Vertragliche, deliktische, dingliche Ansprüche"],
+        ["beklagtenvorbringen_prozessual", "Unzuständigkeit, Streitanhängigkeit, Prozesshindernisse"],
+        ["beklagtenvorbringen_materiell_rechtshindernd", "Geschäftsunfähigkeit, Formmangel, Irrtum"],
+        ["beklagtenvorbringen_materiell_rechtsvernichtend", "Erfüllung, Aufrechnung, Rücktritt"],
+        ["beklagtenvorbringen_materiell_rechtshemmend", "Verjährung, Zurückbehaltung, Fälligkeit"],
+        ["beklagtenvorbringen_allgemein", "Legitimation, Mitverschulden, Bestreitung"],
     ]
 
-    emb_labels = {
-        "klaegervorbringen": "Vollständiges Kläger-Vorbringen (anonymisiert)",
-        "beklagtenvorbringen": "Vollständiges Beklagten-Vorbringen (anonymisiert)",
-        "feststellungen": "Sachverhaltsfeststellungen des Gerichts",
-        "beweisw_rdigung": "Beweiswürdigung des Gerichts",
-        "rechtliche_beurteilung": "Rechtliche Beurteilung und Subsumtion",
-    }
+    la_data = [["Schema-Sektion", "Inhalt"]] + la_sections
 
-    emb_data2 = [["Embedding-Sektion", "Inhalt", "Dim."]] + [
-        [sec, emb_labels.get(sec, sec), str(EMBEDDING_DIM)]
-        for sec in EMBEDDING_SECTIONS
-    ]
-
-    t3 = Table(emb_data2, colWidths=[5 * cm, 10 * cm, 2 * cm])
+    t3 = Table(la_data, colWidths=[7 * cm, 10 * cm])
     t3.setStyle(table_style(STEEL_BLUE))
     story.append(t3)
 
@@ -629,8 +620,7 @@ def build_section_3() -> list:
         S["body"],
     ))
     story.extend(bullet_list([
-        f"data/extracted/cases_dataset.json — Strukturierte Falldaten (JSON, lesbar, manuell editierbar)",
-        f"data/embeddings/embeddings.h5 — Embedding-Vektoren (HDF5, komprimiert, numpy-kompatibel)",
+        f"data/extracted/cases_dataset.json — Falldaten + Legal-Analyse (JSON, lesbar, editierbar)",
         f"data/models/ — Trainiertes Modell (PyTorch .pt) + Feature-Scaler (Pickle)",
     ]))
 
@@ -749,7 +739,7 @@ def build_section_4() -> list:
     ))
     story.extend(bullet_list([
         "1. Eingabe der Falldaten über die UI (Streitwert, Anspruchsart, Einwendungen etc.)",
-        "2. Optional: Freitext-Vorbringen → Embedding via OpenAI text-embedding-3-large",
+        "2. Strukturierte Legal-Analyse aus GPT-5-nano oder manuelle Eingabe",
         "3. Feature-Kodierung mit dem gespeicherten Scaler (kein Neubeschriften)",
         "4. Modell-Inferenz → Wahrscheinlichkeiten für 0, 1, 2",
         "5. Anzeige der Vorhersage + Konfidenz",
@@ -947,8 +937,6 @@ predictive_analytics/
 └── data/
     ├── extracted/
     │   └── cases_dataset.json     # Strukturiertes Dataset
-    ├── embeddings/
-    │   └── embeddings.h5          # Embedding-Vektoren (HDF5)
     └── models/
         ├── litigation_model.pt    # Trainiertes Modell
         ├── feature_scaler.pkl     # StandardScaler
@@ -960,12 +948,12 @@ predictive_analytics/
 
     cost_data = [
         ["Operation", "Modell", "Tokens/Fall", "Kosten/Fall (ca.)"],
-        ["Strukturierte Extraktion", "gpt-4o-mini", "~4.000", "~$0.002"],
-        ["Abschnitte extrahieren", "gpt-4o-mini", "~6.000", "~$0.003"],
-        ["5 Embeddings", "text-embedding-3-large", "~2.500/Abschn.", "~$0.003"],
-        ["Gesamt pro Urteil", "—", "~18.500", "~$0.008"],
-        ["100 Urteile", "—", "—", "~$0.80"],
-        ["500 Urteile", "—", "—", "~$4.00"],
+        ["Strukturierte Extraktion", "gpt-5-nano", "~4.000", "~$0.002"],
+        ["Abschnitte extrahieren", "gpt-5-nano", "~6.000", "~$0.003"],
+        ["Legal-Analyse", "gpt-5-nano", "~8.000", "~$0.004"],
+        ["Gesamt pro Urteil", "—", "~18.000", "~$0.009"],
+        ["1.000 Urteile", "—", "—", "~$9.00"],
+        ["10.000 Urteile", "—", "—", "~$90.00"],
     ]
 
     t = Table(cost_data, colWidths=[5.5 * cm, 4 * cm, 3.5 * cm, 4 * cm])
@@ -979,13 +967,9 @@ predictive_analytics/
     story.append(Paragraph("Modell-Hyperparameter:", S["h2"]))
     hp_data = [
         ["Hyperparameter", "Wert", "Beschreibung"],
-        ["EMBEDDING_DIM", str(EMBEDDING_DIM), "Dimension pro Abschnitt-Embedding"],
-        ["embedding_hidden_dim", str(NN_CONFIG["embedding_hidden_dim"]), "Zwischendimension im Embedding-Encoder"],
-        ["embedding_output_dim", str(NN_CONFIG["embedding_output_dim"]), "Ausgabedimension pro Embedding"],
-        ["structured_hidden_dim", str(NN_CONFIG["structured_hidden_dim"]), "Structured Encoder Dimension"],
+        ["hidden_dims", str(NN_CONFIG["hidden_dims"]), "Hidden-Layer-Dimensionen"],
         ["fusion_dims", str(NN_CONFIG["fusion_dims"]), "Schichtgrößen des Fusion-Netzwerks"],
-        ["dropout_embedding", str(NN_CONFIG["dropout_embedding"]), "Dropout in Embedding-Encodern"],
-        ["dropout_fusion", str(NN_CONFIG["dropout_fusion"]), "Dropout im Fusion-Netzwerk"],
+        ["dropout", str(NN_CONFIG["dropout"]), "Dropout-Rate"],
         ["epochs", str(TRAINING_CONFIG["epochs"]), "Max. Trainingsepochen"],
         ["batch_size", str(TRAINING_CONFIG["batch_size"]), "Batch-Größe"],
         ["learning_rate", str(TRAINING_CONFIG["learning_rate"]), "Initiale Lernrate"],

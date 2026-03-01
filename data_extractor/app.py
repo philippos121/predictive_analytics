@@ -2,7 +2,8 @@
 Litigation Data Extractor — Streamlit UI
 
 Structured extraction of legal data from Austrian civil judgment PDFs
-using OpenAI GPT-4o-mini and text-embedding-3-large.
+using OpenAI GPT-5-nano. Extracts structured metadata, text sections,
+and a detailed legal analysis (no embeddings).
 """
 
 import json
@@ -26,10 +27,10 @@ from config import (
     CLAIM_TYPES,
     DEFENSE_LABELS,
     DEFENSE_TYPES,
-    EMBEDDING_SECTION_LABELS,
     OPENAI_EXTRACTION_MODEL,
     OUTCOME_COLORS,
     OUTCOME_LABELS,
+    SECTION_LABELS,
 )
 from data_extractor.data_manager import DataManager
 from data_extractor.openai_extractor import OpenAIExtractor
@@ -262,7 +263,7 @@ dm: DataManager = st.session_state.data_manager
 st.markdown(f"""
 <div class="app-header">
     <h1>Litigation Data Extractor</h1>
-    <div class="subtitle">Strukturierte Erfassung österreichischer Zivilurteile &mdash; v{APP_VERSION} &mdash; {OPENAI_EXTRACTION_MODEL} / text-embedding-3-large</div>
+    <div class="subtitle">Strukturierte Erfassung österreichischer Zivilurteile &mdash; v{APP_VERSION} &mdash; {OPENAI_EXTRACTION_MODEL} (Structured Data)</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -344,8 +345,8 @@ with tab_extract:
         <div class="pipeline-box">
             <b>Verarbeitungspipeline:</b><br>
             <span class="step">1</span> PDF-Textextraktion (PyMuPDF)<br>
-            <span class="step">2</span> Strukturierte Datenextraktion (GPT-4o-mini)<br>
-            <span class="step">3</span> Embedding-Vektoren (text-embedding-3-large, 3072 dim)<br>
+            <span class="step">2</span> Strukturierte Datenextraktion (GPT-5-nano)<br>
+            <span class="step">3</span> Strukturierte Legal-Analyse (GPT-5-nano)<br>
             <span class="step">4</span> Persistierung im JSON-Dataset
         </div>
         """, unsafe_allow_html=True)
@@ -439,7 +440,7 @@ with tab_extract:
                                 if len(text) < 200:
                                     raise ValueError(f"Text zu kurz ({len(text)} Zeichen) — möglicherweise gescanntes PDF")
 
-                                # Step 2-4: OpenAI extraction + embeddings
+                                # Step 2-4: OpenAI extraction + legal analysis
                                 progress_holder = st.empty()
 
                                 def progress_cb(msg, pct):
@@ -458,7 +459,7 @@ with tab_extract:
                                     filename=pdf_path.name,
                                     structured=extracted["structured"],
                                     sections=extracted["sections"],
-                                    embeddings=extracted["embeddings"],
+                                    legal_analysis=extracted["legal_analysis"],
                                 )
 
                                 progress_holder.empty()
@@ -681,10 +682,7 @@ with tab_dataset:
         with col_exp1:
             if st.button("JSON exportieren", use_container_width=True):
                 json_str = json.dumps(
-                    [
-                        {k: v for k, v in c.items() if k != "embeddings"}
-                        for c in cases
-                    ],
+                    cases,
                     ensure_ascii=False,
                     indent=2,
                 )
@@ -898,7 +896,7 @@ with tab_review:
             st.markdown("**Extrahierte Textabschnitte**")
             sections = case.get("sections", {})
 
-            for sec_key, sec_label in EMBEDDING_SECTION_LABELS.items():
+            for sec_key, sec_label in SECTION_LABELS.items():
                 text = sections.get(sec_key, "")
                 if text:
                     with st.expander(f"{sec_label}  ({len(text)} Zeichen)"):
@@ -1077,16 +1075,9 @@ with tab_manual:
                 "besonderheiten": [],
             }
 
-            with st.spinner("Generiere Embeddings..."):
-                try:
-                    extractor = OpenAIExtractor(st.session_state.api_key)
-                    embeddings = extractor.generate_embeddings(sections)
-                except Exception as e:
-                    st.error(f"Fehler bei Embedding-Generierung: {e}")
-                    embeddings = {
-                        sec: [0.0] * EMBEDDING_DIM
-                        for sec in sections
-                    }
+            # Generate legal analysis for manual entry (default empty)
+            from data_extractor.openai_extractor import OpenAIExtractor as _OAI
+            legal_analysis = _OAI.empty_legal_analysis()
 
             case_id = dm.generate_case_id()
             filename = f"manuell_{case_id}.manual"
@@ -1096,7 +1087,7 @@ with tab_manual:
                 filename=filename,
                 structured=structured,
                 sections=sections,
-                embeddings=embeddings,
+                legal_analysis=legal_analysis,
             )
 
             st.success(
@@ -1111,7 +1102,7 @@ st.markdown(
     f"<div style='text-align:center;color:#888888;font-size:0.75rem;"
     f"font-family:IBM Plex Mono,monospace;letter-spacing:0.04em'>"
     f"Predictive Litigation Analytics &nbsp;·&nbsp; v{APP_VERSION} &nbsp;·&nbsp; "
-    f"{OPENAI_EXTRACTION_MODEL} &nbsp;·&nbsp; text-embedding-3-large"
+    f"{OPENAI_EXTRACTION_MODEL} &nbsp;·&nbsp; Structured Data"
     f"</div>",
     unsafe_allow_html=True,
 )

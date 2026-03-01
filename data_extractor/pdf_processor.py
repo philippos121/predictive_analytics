@@ -13,7 +13,7 @@ from typing import Optional
 import fitz  # PyMuPDF
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import EMBEDDING_SECTIONS
+from config import SECTION_LABELS
 
 
 class PDFProcessingError(Exception):
@@ -78,7 +78,7 @@ def split_into_sections(text: str) -> dict[str, str]:
     - Beweiswürdigung
     - Rechtliche Beurteilung
     """
-    sections = {s: "" for s in EMBEDDING_SECTIONS}
+    sections = {s: "" for s in SECTION_LABELS}
     sections["full_text"] = text
     sections["spruch"] = ""
 

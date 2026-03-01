@@ -30,8 +30,6 @@ from config import (
     CLAIM_TYPES,
     DEFENSE_LABELS,
     DEFENSE_TYPES,
-    EMBEDDING_DIM,
-    EMBEDDING_SECTION_LABELS,
     KNN_THRESHOLD,
     MODEL_CHECKPOINT,
     OUTCOME_COLORS,
@@ -364,7 +362,7 @@ tab_train, tab_eval, tab_predict, tab_ev = st.tabs([
 with tab_train:
     st.markdown('<div class="section-title">Modell trainieren</div>', unsafe_allow_html=True)
 
-    cases, embeddings_dict = dm.export_for_training()
+    cases = dm.export_for_training()
     n_cases = len(cases)
 
     col_s1, col_s2, col_s3, col_s4 = st.columns(4)
@@ -375,7 +373,7 @@ with tab_train:
 
     if n_cases < 1:
         st.error(
-            "Keine beschrifteten Fälle mit Embeddings vorhanden. "
+            "Keine beschrifteten Fälle mit Legal-Analyse vorhanden. "
             "Bitte zuerst Urteile mit dem Data Extractor verarbeiten."
         )
     elif n_cases < KNN_THRESHOLD:
@@ -395,7 +393,7 @@ with tab_train:
         if n_cases < KNN_THRESHOLD:
             st.markdown(f"""
             **Aktiver Modus: k-Nearest-Neighbour** (< {KNN_THRESHOLD} Fälle)
-            - **Methode**: Kosinus-Ähnlichkeit auf verketteten Text-Embeddings (3 × 3072 = 9.216 dim)
+            - **Methode**: Kosinus-Ähnlichkeit auf strukturierten Features (~{fe.feature_dim} dim)
             - **k**: min(5, Trainingsgröße) nächste Nachbarn, gewichtetes Soft-Voting
             - **Parameter**: 0 — kein Gradientenverfahren, kein Training
             - **Vorteil**: sofort einsatzbereit, kein Overfitting-Risiko
@@ -406,24 +404,17 @@ with tab_train:
         else:
             st.markdown(f"""
             **Aktiver Modus: Neuronales Netz** (≥ {KNN_THRESHOLD} Fälle)
-            - **Embedding Encoder** (3×): Linear(3072 → 256) + LayerNorm + GELU + Dropout → Linear(256 → 128)
-            - **Structured Encoder**: Linear({fe.feature_dim} → 64) + LayerNorm + GELU
-            - **Fusion Network**: Linear(448 → 128) + LayerNorm + GELU + Dropout → Linear(128 → 3)
+            - **Structured Encoder**: Linear({fe.feature_dim} → 128) + LayerNorm + GELU + Dropout (2 Schichten)
+            - **Fusion Network**: Linear(128 → 64) + LayerNorm + GELU + Dropout → Linear(64 → 3)
             - **Loss**: Focal Loss (γ=2) mit Klassen-Gewichtung
             - **Optimizer**: AdamW mit ReduceLROnPlateau
             - **Regularisierung**: LayerNorm, Dropout, Gradient Clipping, Early Stopping
-            - **Parameter gesamt**: ~2,56 Mio.
+            - **Parameter gesamt**: ~28 K (kompakt, kein Embedding-Encoder)
 
-            **Input-Embeddings (3 Abschnitte):**
-            - **Kläger-Vorbringen**: Was begehrt der Kläger?
-            - **Beklagten-Vorbringen**: Welche Einwendungen macht der Beklagte?
-            - **Aufgenommene Beweise**: Faktische Beschreibung der aufgenommenen Beweise
-              (Art, Anzahl, welche Partei — ohne Bewertung)
-            - 3 × 128 = 384 dim nach Encodierung + 64 dim strukturiert = **448 dim Fusion-Input**
-
-            **Nicht im Input**: Feststellungen, Beweiswürdigung, Rechtliche Beurteilung
-
-            **Strukturierte Features:** {fe.feature_dim} dim (Streitwert, Anspruchsart, Einwendungen, ...)
+            **Input-Features (~{fe.feature_dim} dim):**
+            - Strukturierte Metadaten (Streitwert, Instanz, Anspruchsart, Einwendungen)
+            - Legal-Analyse (Anspruchsgrundlagen, prozessuale/materielle Einwendungen)
+            - Rechtsgebiet, Verbrauchergeschäft, zitierte Normen
 
             **Output:** 3 Klassen (Unterliegen / Teilweise / Obsiegen)
             """)
@@ -570,7 +561,7 @@ with tab_train:
         trainer = LitigationTrainer(config=custom_config, progress_callback=progress_cb)
 
         try:
-            history = trainer.train(cases, embeddings_dict, save_checkpoint=True)
+            history = trainer.train(cases, save_checkpoint=True)
 
             st.session_state.trainer = trainer
             st.session_state.predictor = LitigationPredictor(trainer)
@@ -677,8 +668,8 @@ with tab_eval:
         if st.button("Vollständige Evaluation berechnen", type="primary"):
             with st.spinner("Evaluiere Modell auf gesamtem Dataset..."):
                 try:
-                    cases, emb_dict = dm.export_for_training()
-                    eval_result = trainer.evaluate_full(cases, emb_dict)
+                    cases = dm.export_for_training()
+                    eval_result = trainer.evaluate_full(cases)
                     st.session_state.eval_result = eval_result
                 except Exception as e:
                     st.error(f"Fehler bei Evaluation: {e}")
@@ -867,24 +858,12 @@ with tab_predict:
                 }
             }
 
-            sections = {
-                "klaegervorbringen": p_klaeger_text,
-                "beklagtenvorbringen": p_beklagter_text,
-                "aufgenommene_beweise": p_aufgenommene_beweise,
-            }
-
-            embeddings = {}
-            if st.session_state.openai_api_key and (p_klaeger_text or p_beklagter_text or p_aufgenommene_beweise):
-                with st.spinner("Generiere Embeddings via OpenAI..."):
-                    try:
-                        from data_extractor.openai_extractor import OpenAIExtractor
-                        extractor = OpenAIExtractor(st.session_state.openai_api_key)
-                        embeddings = extractor.generate_embeddings(sections)
-                    except Exception as e:
-                        st.warning(f"Embedding-Fehler: {e} — Null-Vektoren werden verwendet.")
+            # Use empty legal analysis for quick prediction from form
+            from data_extractor.openai_extractor import OpenAIExtractor as _OAI
+            case_dict["legal_analysis"] = _OAI.empty_legal_analysis()
 
             with st.spinner("Berechne Vorhersage..."):
-                result = st.session_state.predictor.predict(case_dict, embeddings)
+                result = st.session_state.predictor.predict(case_dict)
                 st.session_state.prediction_result = result
 
         # ── Display Results ──────────────────────────────────────────────────────

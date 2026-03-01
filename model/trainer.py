@@ -1,6 +1,8 @@
 """
 Model Trainer: Training loop, validation, early stopping, and checkpointing
 for the LitigationClassifier neural network.
+
+v2.0 — Structured data only, no embeddings.
 """
 
 import json
@@ -16,7 +18,6 @@ from torch.utils.data import DataLoader
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
-    ENCODER_FILE,
     KNN_FILE,
     KNN_THRESHOLD,
     MODEL_CHECKPOINT,
@@ -89,28 +90,21 @@ class LitigationTrainer:
         """Send progress update to callback."""
         self.progress_callback(**kwargs)
 
-    def prepare_data(
-        self,
-        cases: list[dict],
-        embeddings_dict: dict,
-    ) -> tuple:
+    def prepare_data(self, cases: list[dict]) -> tuple:
         """Prepare datasets for training."""
         train_ds, val_ds, full_ds = prepare_dataset(
             cases,
-            embeddings_dict,
             self.feature_engineer,
             val_split=self.config["val_split"],
             random_seed=self.config["random_seed"],
         )
 
-        # We use feature_dim from the feature engineer
         feature_dim = self.feature_engineer.feature_dim
-
         return train_ds, val_ds, full_ds, feature_dim
 
-    def build_model(self, structured_dim: int) -> LitigationClassifier:
+    def build_model(self, input_dim: int) -> LitigationClassifier:
         """Initialize the neural network."""
-        model = LitigationClassifier(structured_dim=structured_dim)
+        model = LitigationClassifier(input_dim=input_dim)
         model = model.to(self.device)
         self.model = model
         return model
@@ -118,15 +112,13 @@ class LitigationTrainer:
     def train(
         self,
         cases: list[dict],
-        embeddings_dict: dict,
         save_checkpoint: bool = True,
     ) -> dict:
         """
         Full training pipeline.
 
         Args:
-            cases: List of case dicts (labeled)
-            embeddings_dict: {case_id: {section: np.ndarray}}
+            cases: List of case dicts (labeled, with legal_analysis)
             save_checkpoint: Whether to save best model
 
         Returns:
@@ -139,10 +131,9 @@ class LitigationTrainer:
         n_labeled = sum(
             1 for c in cases
             if c["structured"].get("outcome") is not None
-            and c["case_id"] in embeddings_dict
         )
         if n_labeled < KNN_THRESHOLD:
-            return self._train_knn(cases, embeddings_dict, save_checkpoint)
+            return self._train_knn(cases, save_checkpoint)
 
         # Neural network path — clear any previous kNN
         self.knn = None
@@ -152,7 +143,7 @@ class LitigationTrainer:
         # ── Data Preparation ─────────────────────────────────────────────────────
         self._log(phase="preparing", message="Daten werden vorbereitet...")
 
-        train_ds, val_ds, full_ds, feature_dim = self.prepare_data(cases, embeddings_dict)
+        train_ds, val_ds, full_ds, feature_dim = self.prepare_data(cases)
 
         self._log(
             phase="prepared",
@@ -225,13 +216,12 @@ class LitigationTrainer:
             model.train()
             train_loss, train_correct, train_total = 0.0, 0, 0
 
-            for emb_batch, struct_batch, label_batch in train_loader:
-                emb_batch = [e.to(self.device) for e in emb_batch]
+            for struct_batch, label_batch in train_loader:
                 struct_batch = struct_batch.to(self.device)
                 label_batch = label_batch.to(self.device)
 
                 optimizer.zero_grad()
-                logits, _ = model(emb_batch, struct_batch)
+                logits, _ = model(struct_batch)
                 loss = criterion(logits, label_batch)
                 loss.backward()
 
@@ -317,12 +307,10 @@ class LitigationTrainer:
     def _train_knn(
         self,
         cases: list[dict],
-        embeddings_dict: dict,
         save_checkpoint: bool,
     ) -> dict:
         """Train kNN model for small datasets (< KNN_THRESHOLD labeled cases)."""
-        import time as _time
-        start_time = _time.time()
+        start_time = time.time()
 
         self._log(
             phase="preparing",
@@ -336,7 +324,6 @@ class LitigationTrainer:
         labeled = [
             c for c in cases
             if c["structured"].get("outcome") is not None
-            and c["case_id"] in embeddings_dict
         ]
         n = len(labeled)
 
@@ -348,16 +335,16 @@ class LitigationTrainer:
         )
 
         if n < 1:
-            raise ValueError("Keine gültigen Trainingsfälle mit Outcome-Label und Embeddings gefunden.")
+            raise ValueError("Keine gültigen Trainingsfälle mit Outcome-Label gefunden.")
 
         k = min(KNNLitigationPredictor.DEFAULT_K, n)
         self.knn = KNNLitigationPredictor(k=k)
-        self.knn.fit(cases, embeddings_dict)
+        self.knn.fit(cases, self.feature_engineer)
         self.model = None
 
         self._log(phase="knn_fitted", n_cases=n, k=k)
 
-        elapsed = _time.time() - start_time
+        elapsed = time.time() - start_time
         self.history = {
             "model_type": "knn",
             "n_training_cases": n,
@@ -399,12 +386,11 @@ class LitigationTrainer:
         total_loss, correct, total = 0.0, 0, 0
 
         with torch.no_grad():
-            for emb_batch, struct_batch, label_batch in loader:
-                emb_batch = [e.to(self.device) for e in emb_batch]
+            for struct_batch, label_batch in loader:
                 struct_batch = struct_batch.to(self.device)
                 label_batch = label_batch.to(self.device)
 
-                logits, _ = model(emb_batch, struct_batch)
+                logits, _ = model(struct_batch)
                 loss = criterion(logits, label_batch)
 
                 total_loss += loss.item() * len(label_batch)
@@ -414,21 +400,19 @@ class LitigationTrainer:
 
         return (total_loss / total, correct / total) if total > 0 else (0.0, 0.0)
 
-    def evaluate_full(
-        self, cases: list[dict], embeddings_dict: dict
-    ) -> dict:
+    def evaluate_full(self, cases: list[dict]) -> dict:
         """
         Full evaluation on the complete dataset.
         Returns per-class metrics.
         """
         if self.knn is not None:
-            return self._evaluate_full_knn(cases, embeddings_dict)
+            return self._evaluate_full_knn(cases)
 
         if self.model is None:
             raise RuntimeError("Model not trained/loaded.")
 
         structured_features = self.feature_engineer.transform(cases)
-        full_ds = LitigationDataset(cases, embeddings_dict, structured_features)
+        full_ds = LitigationDataset(cases, structured_features)
         loader = DataLoader(
             full_ds, batch_size=32, shuffle=False, collate_fn=collate_fn
         )
@@ -437,11 +421,10 @@ class LitigationTrainer:
         all_preds, all_labels, all_probs = [], [], []
 
         with torch.no_grad():
-            for emb_batch, struct_batch, label_batch in loader:
-                emb_batch = [e.to(self.device) for e in emb_batch]
+            for struct_batch, label_batch in loader:
                 struct_batch = struct_batch.to(self.device)
 
-                logits, probs = self.model(emb_batch, struct_batch)
+                logits, probs = self.model(struct_batch)
                 preds = logits.argmax(dim=-1)
 
                 all_preds.extend(preds.cpu().numpy())
@@ -473,15 +456,14 @@ class LitigationTrainer:
             "probabilities": all_probs.tolist(),
         }
 
-    def _evaluate_full_knn(self, cases: list[dict], embeddings_dict: dict) -> dict:
+    def _evaluate_full_knn(self, cases: list[dict]) -> dict:
         """Evaluate kNN predictor on the full labeled dataset."""
         all_preds, all_labels, all_probs = [], [], []
         for case in cases:
-            case_id = case["case_id"]
             outcome = case["structured"].get("outcome")
-            if outcome is None or case_id not in embeddings_dict:
+            if outcome is None:
                 continue
-            result = self.knn.predict(embeddings_dict[case_id])
+            result = self.knn.predict_case(case)
             all_preds.append(result["predicted_outcome"])
             all_labels.append(int(outcome))
             all_probs.append([result["p_loss"], result["p_partial"], result["p_win"]])
@@ -528,7 +510,7 @@ class LitigationTrainer:
                     "model_type": "neural_net",
                     "model_state_dict": self.model.state_dict(),
                     "model_config": self.model.config,
-                    "structured_dim": self.model.structured_encoder.encoder[0].in_features,
+                    "input_dim": self.model.input_dim,
                     "history": self.history,
                 },
                 MODEL_CHECKPOINT,
@@ -542,13 +524,7 @@ class LitigationTrainer:
             json.dump(self.history, f, indent=2)
 
     def load_checkpoint(self) -> bool:
-        """Load model (kNN or NN) and feature engineer from checkpoint.
-
-        Returns False (and deletes the checkpoint) if the saved architecture is
-        incompatible with the current model configuration, e.g. when the number
-        of embedding sections changed (5 → 3).  The user will then be asked to
-        retrain the model.
-        """
+        """Load model (kNN or NN) and feature engineer from checkpoint."""
         if not MODEL_CHECKPOINT.exists():
             return False
 
@@ -568,18 +544,21 @@ class LitigationTrainer:
             return True
 
         # ── Neural network checkpoint ─────────────────────────────────────────
-        structured_dim = checkpoint["structured_dim"]
+        input_dim = checkpoint.get("input_dim")
+        if input_dim is None:
+            # Incompatible old checkpoint
+            self.model = None
+            MODEL_CHECKPOINT.unlink(missing_ok=True)
+            return False
+
         self.model = LitigationClassifier(
-            structured_dim=structured_dim,
+            input_dim=input_dim,
             config=checkpoint.get("model_config", {}),
         )
 
         try:
             self.model.load_state_dict(checkpoint["model_state_dict"])
         except RuntimeError:
-            # Checkpoint was trained with a different architecture (e.g. different
-            # number of embedding sections).  Remove it so the UI shows a clean
-            # "no model trained yet" state instead of crashing.
             self.model = None
             MODEL_CHECKPOINT.unlink(missing_ok=True)
             return False

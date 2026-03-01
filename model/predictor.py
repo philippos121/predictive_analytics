@@ -1,6 +1,8 @@
 """
 Predictor: Apply the trained model to new cases for outcome prediction.
 
+v2.0 — Structured data only, no embeddings.
+
 Implements the expected value calculation combining:
 1. ML model probability (from trained LitigationClassifier)
 2. Juristic success estimate (from external AI assessment)
@@ -19,8 +21,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
     DEFENSE_LABELS,
     DEFENSE_TYPES,
-    EMBEDDING_DIM,
-    EMBEDDING_SECTIONS,
     OUTCOME_COLORS,
     OUTCOME_LABELS,
 )
@@ -35,23 +35,17 @@ class LitigationPredictor:
 
     Expected Value Formula (gewichtetes Mixture zweier Verteilungen):
 
-        Jurist-Verteilung : P_jur  = (win=juristic, partial=0, loss=1−juristic)
+        Jurist-Verteilung : P_jur  = (win=juristic, partial=0, loss=1-juristic)
         ML-Verteilung     : P_ml   = (win=p_win_ml, partial=p_partial_ml, loss=p_loss_ml)
                             konditioniert auf rechtliche Zulässigkeit (juristic);
-                            unbedingtes ML = juristic × P_ml_conditional
+                            unbedingtes ML = juristic * P_ml_conditional
 
         Mixture:
-            p_full    = w_ml × juristic × p_win_ml  +  w_jur × juristic
-            p_partial = w_ml × juristic × p_partial_ml
-            p_failure = 1 − p_full − p_partial
+            p_full    = w_ml * juristic * p_win_ml  +  w_jur * juristic
+            p_partial = w_ml * juristic * p_partial_ml
+            p_failure = 1 - p_full - p_partial
 
-        Garantie: juristic = 0  →  p_full = p_partial = 0
-            (rechtlich völlig unschlüssige Fälle schlagen auf Gesamtergebnis durch)
-
-    where:
-        juristic      = juristic success estimate (0.0–1.0), auch P(rechtlich zulässig)
-        p_win_ml      = model's predicted probability of outcome=2 (Obsiegen)
-        w_ml, w_jur   = configurable weights (default 0.5 each), sum to 1
+        Garantie: juristic = 0  ->  p_full = p_partial = 0
     """
 
     def __init__(self, trainer: LitigationTrainer):
@@ -68,53 +62,35 @@ class LitigationPredictor:
             return cls(trainer)
         return None
 
-    def predict(
-        self,
-        case_dict: dict,
-        embeddings: dict[str, list[float]],
-    ) -> dict:
+    def predict(self, case_dict: dict) -> dict:
         """
         Predict outcome probabilities for a new case.
 
         Routes to kNN or neural network depending on which model is loaded.
 
         Args:
-            case_dict: Case metadata dict (same structure as training data)
-            embeddings: {section_name: embedding_vector}
+            case_dict: Case dict with 'structured' and 'legal_analysis' keys
 
         Returns:
             dict with probabilities, predicted class, confidence
         """
-        # kNN path — no structured features needed
+        # kNN path
         if self.trainer.knn is not None:
-            return self.trainer.knn.predict(embeddings)
+            return self.trainer.knn.predict_case(case_dict)
 
         if self.model is None:
             raise RuntimeError("Kein trainiertes Modell verfügbar.")
 
         self.model.eval()
 
-        # Encode structured features
+        # Encode structured features (includes legal_analysis)
         structured = self.feature_engineer.encode_single_transform(case_dict)
         structured_tensor = torch.tensor(
             structured, dtype=torch.float32
         ).unsqueeze(0).to(self.device)
 
-        # Load embeddings
-        emb_tensors = []
-        for section in EMBEDDING_SECTIONS:
-            if section in embeddings and embeddings[section]:
-                vec = np.array(embeddings[section], dtype=np.float32)
-                if len(vec) != EMBEDDING_DIM:
-                    vec = np.zeros(EMBEDDING_DIM, dtype=np.float32)
-            else:
-                vec = np.zeros(EMBEDDING_DIM, dtype=np.float32)
-            emb_tensors.append(
-                torch.tensor(vec, dtype=torch.float32).unsqueeze(0).to(self.device)
-            )
-
         with torch.no_grad():
-            logits, probs = self.model(emb_tensors, structured_tensor)
+            logits, probs = self.model(structured_tensor)
 
         probs_np = probs.cpu().numpy()[0]
         predicted_class = int(probs_np.argmax())
@@ -144,18 +120,6 @@ class LitigationPredictor:
     ) -> dict:
         """
         Compute the combined expected value of a case.
-
-        Args:
-            ml_result: Output from predict()
-            juristic_estimate: AI juristic success probability (0.0–1.0)
-            w_ml: Weight for ML model prediction
-            w_jurist: Weight for juristic estimate
-            streitwert_eur: Case value in EUR (for monetary EV)
-            cost_estimate_eur: Fallback manual cost estimate in EUR
-            ratg_kosten: RATG/GGG cost calculation (preferred over cost_estimate_eur)
-
-        Returns:
-            Expected value analysis dict
         """
         # Normalize weights
         w_total = w_ml + w_jurist
@@ -166,38 +130,16 @@ class LitigationPredictor:
         p_win_ml = ml_result["p_win"]
         p_partial_ml = ml_result["p_partial"]
 
-        # Gewichtetes Mixture zweier Wahrscheinlichkeitsverteilungen:
-        #
-        #   Jurist-Verteilung : (p_win=juristic, p_partial=0, p_loss=1−juristic)
-        #   ML-Verteilung     : ML-Modell wurde auf zugelassenen Fällen trainiert;
-        #                       juristic_estimate skaliert als P(rechtlich zulässig)
-        #                       die ML-Wahrscheinlichkeiten auf den unbedingten Raum.
-        #
-        #   p_ml_win_adj     = juristic * p_win_ml      (bedingtes ML → unbedingt)
-        #   p_ml_partial_adj = juristic * p_partial_ml
-        #
-        #   Mixture (konvexe Kombination):
-        #     p_full    = w_ml * p_ml_win_adj     + w_jur * juristic
-        #               = juristic * (w_ml * p_win_ml + w_jur)
-        #     p_partial = w_ml * p_ml_partial_adj + w_jur * 0
-        #     p_failure = 1 − p_full − p_partial
-        #
-        # Garantie: juristic=0 (rechtlich unschlüssig) → p_full=0, p_partial=0
-        #   unabhängig vom ML-Modell, weil beide Terme mit juristic skaliert sind.
-        # Beweis: p_full + p_partial ≤ juristic ≤ 1, daher p_failure ≥ 0.
-
-        # Mixture: ML-Anteil mit Zulässigkeits-Skalierung
+        # Mixture
         p_ml_win_adj     = juristic_estimate * p_win_ml
         p_ml_partial_adj = juristic_estimate * p_partial_ml
 
-        # Jurist-Anteil (Vollerfolg-Beitrag; kein Teilerfolg-Beitrag)
         p_jur_win = juristic_estimate
 
         p_full_success    = w_ml_norm * p_ml_win_adj     + w_jurist_norm * p_jur_win
         p_partial_success = w_ml_norm * p_ml_partial_adj
         p_failure = max(0.0, 1.0 - p_full_success - p_partial_success)
 
-        # Weighted win probability
         ev_probability = p_full_success + 0.5 * p_partial_success
 
         result = {
@@ -215,7 +157,6 @@ class LitigationPredictor:
         if streitwert_eur is not None and streitwert_eur > 0:
             sw = streitwert_eur
 
-            # Brutto-EV (rein statistisch, ohne Kosten) – Referenzwert
             ev_gross = (
                 p_full_success    * sw
                 + p_partial_success * sw * 0.5
@@ -224,18 +165,7 @@ class LitigationPredictor:
             result["ev_gross_eur"]   = ev_gross
 
             if ratg_kosten is not None:
-                # ── Asymmetrisches Kostenmodell nach ZPO (§§ 41, 43) ────────
-                #
-                #   Obsiegen    (+sw):  Kosten vom Gegner ersetzt (§ 41 ZPO)
-                #                       → Netto-Kostenbelastung = 0
-                #
-                #   Teilerfolg  (+sw/2): Jede Partei trägt eigene Anwaltskosten
-                #                        + anteilige GGG (§ 43 ZPO)
-                #
-                #   Unterliegen (  0):  Kläger trägt eigene Kosten + GGG
-                #                       + gegnerische RATG-Kosten (§ 41 ZPO)
-                #
-                k_ob  = ratg_kosten.kosten_bei_obsiegen        # = 0
+                k_ob  = ratg_kosten.kosten_bei_obsiegen
                 k_tob = ratg_kosten.kosten_bei_teilobsiegen
                 k_ul  = ratg_kosten.kosten_bei_unterliegen
 
@@ -259,7 +189,6 @@ class LitigationPredictor:
                 result["cost_model"]             = "RATG"
 
             elif cost_estimate_eur is not None:
-                # Fallback: manuell eingegebene Pauschalkostenschätzung
                 ev_net = ev_gross - cost_estimate_eur
                 result["cost_estimate_eur"]      = cost_estimate_eur
                 result["ev_net_eur"]             = ev_net
@@ -282,7 +211,7 @@ class LitigationPredictor:
 
     def get_feature_importance(self) -> Optional[dict]:
         """
-        Approximate feature importance via gradient analysis.
+        Approximate feature importance via weight analysis.
         Only available if neural network is trained (not for kNN mode).
         """
         if self.trainer.knn is not None:
@@ -291,12 +220,14 @@ class LitigationPredictor:
         if self.model is None:
             return None
 
-        # Feature names from feature engineer
+        # Feature names
+        from config import CLAIM_TYPES, LEGAL_ANALYSIS_BOOL_FIELDS, LEGAL_ANALYSIS_LIST_FIELDS, RECHTSGEBIET_CATEGORIES
+
         feature_names = []
+
+        # A) Original structured features
         feature_names.append("log_streitwert")
-        for ct in __import__(
-            "config", fromlist=["CLAIM_TYPES"]
-        ).CLAIM_TYPES:
+        for ct in CLAIM_TYPES:
             feature_names.append(f"claim_{ct}")
         feature_names.append("claim_Andere")
         for d in DEFENSE_TYPES:
@@ -310,8 +241,18 @@ class LitigationPredictor:
             feature_names.append(f"instanz_{inst}")
         feature_names.append("sachverstaendiger")
 
-        # Get structured encoder weights as proxy
-        weights = self.model.structured_encoder.encoder[0].weight.data.abs()
+        # B) Legal analysis features
+        for rg in RECHTSGEBIET_CATEGORIES:
+            feature_names.append(f"rechtsgebiet_{rg}")
+        for section_key, fields in LEGAL_ANALYSIS_BOOL_FIELDS.items():
+            for field in fields:
+                feature_names.append(f"la_{section_key}_{field}")
+        for section_key, fields in LEGAL_ANALYSIS_LIST_FIELDS.items():
+            for field in fields:
+                feature_names.append(f"la_{section_key}_{field}_count")
+
+        # Get encoder first-layer weights as proxy for importance
+        weights = self.model.encoder[0].weight.data.abs()
         importance = weights.mean(dim=0).cpu().numpy()
 
         if len(importance) != len(feature_names):

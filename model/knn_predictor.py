@@ -1,12 +1,12 @@
 """
 k-Nearest-Neighbour predictor for small training sets (< KNN_THRESHOLD cases).
 
-Uses cosine similarity on concatenated section embeddings for outcome prediction.
-No gradient-based training — just index the training cases and query at inference.
+v2.0 — Uses structured feature vectors instead of embedding concatenation.
+Cosine similarity on the encoded feature vector for outcome prediction.
 
 Design:
-  - Concatenate 3 section embeddings: 3 × 3072 = 9216-dim feature vector
-  - Normalize to unit length (cosine similarity = dot product)
+  - Encode each case via FeatureEngineer → ~77-dim feature vector
+  - L2-normalize for cosine similarity
   - k = min(5, n_training) nearest neighbours
   - Weighted soft-voting: weight = cosine similarity (clipped to [0, 1])
 """
@@ -19,7 +19,7 @@ from typing import Optional
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import EMBEDDING_DIM, EMBEDDING_SECTIONS, OUTCOME_LABELS
+from config import OUTCOME_LABELS
 
 
 class KNNLitigationPredictor:
@@ -27,34 +27,21 @@ class KNNLitigationPredictor:
     k-Nearest-Neighbour classifier for Austrian civil case outcome prediction.
 
     Designed for datasets with fewer than KNN_THRESHOLD labeled cases, where
-    neural network training would overfit. Uses pre-computed OpenAI embeddings
-    directly — no additional training required.
+    neural network training would overfit. Uses structured feature vectors
+    from FeatureEngineer — no embeddings required.
     """
 
     DEFAULT_K = 5
 
     def __init__(self, k: int = DEFAULT_K):
         self.k = k
-        self.train_embeddings: Optional[np.ndarray] = None  # (N, 3*EMBEDDING_DIM)
-        self.train_labels: Optional[np.ndarray] = None       # (N,)
+        self.train_features: Optional[np.ndarray] = None  # (N, feature_dim)
+        self.train_labels: Optional[np.ndarray] = None      # (N,)
         self.n_classes = 3
         self.is_fitted = False
+        self._feature_engineer = None
 
-    # ── Feature Construction ──────────────────────────────────────────────────
-
-    def _concat_embeddings(self, embeddings: dict) -> np.ndarray:
-        """Concatenate all section embeddings into one 9216-dim vector."""
-        parts = []
-        for section in EMBEDDING_SECTIONS:
-            vec = embeddings.get(section)
-            if vec is not None:
-                arr = np.asarray(vec, dtype=np.float32).ravel()
-                if arr.shape[0] != EMBEDDING_DIM:
-                    arr = np.zeros(EMBEDDING_DIM, dtype=np.float32)
-            else:
-                arr = np.zeros(EMBEDDING_DIM, dtype=np.float32)
-            parts.append(arr)
-        return np.concatenate(parts)  # (3 * EMBEDDING_DIM,)
+    # ── Normalization ──────────────────────────────────────────────────────────
 
     def _normalize(self, X: np.ndarray) -> np.ndarray:
         """L2-normalize rows (for cosine similarity via dot product)."""
@@ -64,42 +51,42 @@ class KNNLitigationPredictor:
 
     # ── Fit ──────────────────────────────────────────────────────────────────
 
-    def fit(self, cases: list[dict], embeddings_dict: dict) -> None:
-        """Index all labeled training cases."""
-        vecs, labels = [], []
-        for case in cases:
-            case_id = case["case_id"]
-            outcome = case["structured"].get("outcome")
-            if outcome is None or case_id not in embeddings_dict:
-                continue
-            vec = self._concat_embeddings(embeddings_dict[case_id])
-            vecs.append(vec)
-            labels.append(int(outcome))
+    def fit(self, cases: list[dict], feature_engineer) -> None:
+        """Index all labeled training cases using structured features."""
+        self._feature_engineer = feature_engineer
 
-        if not vecs:
+        labeled = [
+            c for c in cases
+            if c["structured"].get("outcome") is not None
+        ]
+
+        if not labeled:
             raise ValueError("Keine gültigen Trainingsfälle für kNN gefunden.")
 
-        self.train_embeddings = self._normalize(np.stack(vecs))  # (N, D)
+        # Encode features — use the already-fitted scaler
+        features = feature_engineer.encode_batch(labeled)
+        if feature_engineer.is_fitted:
+            features = feature_engineer.scaler.transform(features)
+
+        labels = [int(c["structured"]["outcome"]) for c in labeled]
+
+        self.train_features = self._normalize(features)
         self.train_labels = np.array(labels, dtype=np.int64)
         self.is_fitted = True
 
     # ── Predict ──────────────────────────────────────────────────────────────
 
-    def predict_proba(self, embeddings: dict) -> np.ndarray:
+    def predict_proba_from_features(self, features: np.ndarray) -> np.ndarray:
         """
-        Return class probability vector [p_loss, p_partial, p_win].
-
-        Each of the k nearest neighbours contributes its class label with
-        weight equal to its cosine similarity (clipped to [0, 1]).
+        Return class probability vector [p_loss, p_partial, p_win]
+        from a pre-encoded feature vector.
         """
         if not self.is_fitted:
             raise RuntimeError("KNN-Modell nicht trainiert.")
 
-        vec = self._normalize(
-            self._concat_embeddings(embeddings).reshape(1, -1)
-        )  # (1, D)
+        vec = self._normalize(features.reshape(1, -1))  # (1, D)
 
-        sims = (self.train_embeddings @ vec.T).ravel()  # (N,)
+        sims = (self.train_features @ vec.T).ravel()  # (N,)
         k = min(self.k, len(self.train_labels))
         top_idx = np.argsort(sims)[-k:][::-1]
         top_sims = np.clip(sims[top_idx], 0.0, 1.0)
@@ -108,7 +95,6 @@ class KNNLitigationPredictor:
         weight_sum = float(top_sims.sum())
 
         if weight_sum < 1e-8:
-            # Uniform fallback when all similarities are zero
             probs[:] = 1.0 / self.n_classes
         else:
             for sim, lbl in zip(top_sims, self.train_labels[top_idx]):
@@ -117,10 +103,15 @@ class KNNLitigationPredictor:
 
         return probs
 
-    def predict(self, embeddings: dict) -> dict:
-        """Predict outcome dict for a single case (same format as NN predictor)."""
-        probs = self.predict_proba(embeddings)
+    def predict_case(self, case_dict: dict) -> dict:
+        """Predict outcome for a single case dict (with structured + legal_analysis)."""
+        if self._feature_engineer is None:
+            raise RuntimeError("kNN not fitted (no feature engineer).")
+
+        features = self._feature_engineer.encode_single_transform(case_dict)
+        probs = self.predict_proba_from_features(features)
         predicted_class = int(probs.argmax())
+
         return {
             "predicted_outcome": predicted_class,
             "predicted_label": OUTCOME_LABELS[predicted_class],
@@ -142,9 +133,10 @@ class KNNLitigationPredictor:
         with open(path, "wb") as f:
             pickle.dump(
                 {
-                    "train_embeddings": self.train_embeddings,
+                    "train_features": self.train_features,
                     "train_labels": self.train_labels,
                     "k": self.k,
+                    "feature_engineer": self._feature_engineer,
                 },
                 f,
             )
@@ -152,7 +144,8 @@ class KNNLitigationPredictor:
     def load(self, path: Path) -> None:
         with open(path, "rb") as f:
             data = pickle.load(f)
-        self.train_embeddings = data["train_embeddings"]
+        self.train_features = data["train_features"]
         self.train_labels = data["train_labels"]
         self.k = data.get("k", self.DEFAULT_K)
+        self._feature_engineer = data.get("feature_engineer")
         self.is_fitted = True

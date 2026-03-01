@@ -1,6 +1,11 @@
 """
-OpenAI Extractor: Uses GPT-4o-mini and text-embedding-3-large to extract
-structured legal data and embeddings from Austrian civil judgment text.
+OpenAI Extractor: Uses GPT-5-nano to extract structured legal data
+and a detailed legal analysis from Austrian civil judgment text.
+
+v2.0 — No embeddings.  Instead of text-embedding-3-large vectors the extractor
+now produces a fine-grained structured legal analysis (fall_metadaten,
+klaegervorbringen, beklagtenvorbringen categories) that serves as the primary
+training signal for the prediction model.
 """
 
 import json
@@ -21,15 +26,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
     CLAIM_TYPES,
     DEFENSE_TYPES,
-    EMBEDDING_DIM,
-    EMBEDDING_SECTIONS,
-    OPENAI_EMBEDDING_MODEL,
     OPENAI_EXTRACTION_MODEL,
     OPENAI_REQUEST_DELAY_SEC,
 )
 
 
-# ─── Extraction Prompt ──────────────────────────────────────────────────────────
+# ─── Extraction Prompt (metadata + outcome) ──────────────────────────────────────
 
 EXTRACTION_SYSTEM_PROMPT = """Du bist ein Experte für österreichisches Zivilrecht.
 Deine Aufgabe ist es, aus Texten österreichischer Zivilurteile präzise strukturierte
@@ -117,11 +119,104 @@ URTEILSTEXT:
 {text}"""
 
 
+# ─── Structured Legal Analysis Prompt ────────────────────────────────────────────
+# Replaces embeddings: GPT extracts a detailed, schema-conformant JSON
+# covering claims, defenses, and procedural aspects.
+
+LEGAL_ANALYSIS_SYSTEM_PROMPT = """You are an expert Austrian legal AI specialized in civil law (Zivilrecht, ABGB) and civil procedure (Zivilprozessrecht, ZPO). Your task is to analyze the initial court submissions (Vorbringen) of the plaintiff (Kläger) and defendant (Beklagter) from an Austrian civil trial (Erstgericht).
+
+Extract a highly structured JSON representation of the legal arguments, claims, and defenses. Do not hallucinate. If a specific defense, claim, or concept is not explicitly mentioned or heavily implied by the facts, default to `false` or `null`.
+
+Return ONLY a valid JSON object matching the following exact schema:
+
+{
+  "fall_metadaten": {
+    "rechtsgebiet_hauptkategorie": "Enum: [Schuldrecht_Vertrag, Schuldrecht_Gesetzlich, Sachenrecht, Familienrecht, Erbrecht, Immaterialgueterrecht, Gesellschaftsrecht, Sonstiges]",
+    "verbrauchergeschaeft_kschg": "Boolean. True if the facts indicate a B2C transaction triggering KSchG or FAGG.",
+    "streitwert_bekannt": "Boolean. True if a specific monetary amount is demanded."
+  },
+
+  "klaegervorbringen_anspruchsgrundlagen": {
+    "vertraglich_erfuellung": "Boolean. Claiming primary performance of a contract (e.g., Kaufpreis, Werklohn, Mietzins).",
+    "vertraglich_gewaehrleistung": "Boolean. Warranty claims (§§ 922 ff ABGB - Preisminderung, Wandlung, Verbesserung).",
+    "vertraglich_poenale": "Boolean. Claiming a contractual penalty (Konventionalstrafe/Pönale, § 1336 ABGB).",
+    "quasi_vertraglich": "Boolean. Culpa in contrahendo (c.i.c.) or Geschäftsführung ohne Auftrag (GoA, §§ 1036 ff).",
+    "schadenersatz_ex_contractu": "Boolean. Contractual damages (§§ 1295 iVm 1298 ABGB).",
+    "schadenersatz_ex_delicto": "Boolean. Tortious damages or strict liability (Verschuldenshaftung, EKHG, PHG).",
+    "bereicherung": "Boolean. Unjust enrichment (Condictio, §§ 1431 ff, § 877 ABGB).",
+    "dinglich_eigentum": "Boolean. Rei vindicatio (Eigentumsklage, § 366 ABGB) or Actio negatoria (§ 523 ABGB).",
+    "dinglich_besitz": "Boolean. Possession protection (Besitzstörungsklage, § 339 ABGB).",
+    "unterlassung_beseitigung": "Boolean. Injunctive relief or removal (often in IP, UWG, or property law).",
+    "sonstige_anspruchsgrundlage": "Boolean. True if there is a core claim that does not fit the above categories.",
+    "sonstige_anspruchsgrundlage_beschreibung": "String. If sonstige_anspruchsgrundlage is true, name the legal concept. Otherwise null.",
+    "zitierte_normen_klaeger": "List of Strings. E.g., ['§ 879 ABGB', '§ 1295 ABGB']. Empty list if none."
+  },
+
+  "beklagtenvorbringen_prozessual": {
+    "unzuständigkeit": "Boolean. Lack of jurisdiction (örtlich, sachlich, international).",
+    "streitanhaengigkeit_rechtskraft": "Boolean. Lis pendens or res judicata (already pending or decided).",
+    "mangelnde_partei_prozessfaehigkeit": "Boolean. Lack of legal capacity to be a party or stand in court.",
+    "sonstiges_prozesshindernis": "Boolean. True if another formal blocker (e.g., Schiedseinrede) is raised.",
+    "sonstiges_prozesshindernis_beschreibung": "String. If sonstiges_prozesshindernis is true, name it. Otherwise null."
+  },
+
+  "beklagtenvorbringen_materiell_rechtshindernd": {
+    "mangelnde_geschaeftsfaehigkeit": "Boolean. Incapacity to contract (§ 865 ABGB).",
+    "dissens_scherz_scheinvertrag": "Boolean. Lack of genuine agreement, joke declaration, or sham contract (§§ 869, 916 ABGB).",
+    "sittenwidrigkeit_gesetzwidrigkeit": "Boolean. Immorality or illegality (§ 879 ABGB).",
+    "formmangel": "Boolean. Lack of required legal form (§ 883 ABGB, e.g., Notariatsakt).",
+    "irrtum_list_drohung": "Boolean. Contesting validity due to error, deceit, or duress (§§ 870, 871 ABGB).",
+    "laesio_enormis_wucher": "Boolean. Verkürzung über die Hälfte (§ 934 ABGB) or unconscionability.",
+    "sonstige_rechtshindernde_einwendung": "Boolean. True if another rechtshindernde Einwendung applies.",
+    "sonstige_rechtshindernde_beschreibung": "String. If true, briefly describe it. Otherwise null."
+  },
+
+  "beklagtenvorbringen_materiell_rechtsvernichtend": {
+    "erfuellung_zahlung": "Boolean. Claim already fulfilled or paid (§ 1412 ABGB).",
+    "aufrechnung_kompensation": "Boolean. Set-off against a counterclaim (§ 1438 ABGB).",
+    "ruecktritt_kuendigung": "Boolean. Valid withdrawal (e.g., KSchG, FAGG) or termination of contract (§ 918 ABGB).",
+    "unmoeglichkeit": "Boolean. Subsequent impossibility of performance or force majeure (§ 1447 ABGB).",
+    "verzicht_erlass": "Boolean. Waiver or release of debt (§ 1444 ABGB).",
+    "sonstige_rechtsvernichtende_einwendung": "Boolean. True if another rechtsvernichtende Einwendung applies.",
+    "sonstige_rechtsvernichtende_beschreibung": "String. If true, briefly describe it. Otherwise null."
+  },
+
+  "beklagtenvorbringen_materiell_rechtshemmend": {
+    "verjaehrung_praeklusion": "Boolean. Statute of limitations expired (§ 1478 ABGB) or preclusion.",
+    "zug_um_zug_einrede": "Boolean. Einrede des nicht erfüllten Vertrages (§ 1052 ABGB - won't perform until plaintiff performs).",
+    "zurueckbehaltungsrecht": "Boolean. Right of retention (§ 471 ABGB).",
+    "mangelnde_faelligkeit_stundung": "Boolean. Claim is not yet due or an extension (Stundung) was granted.",
+    "sonstige_rechtshemmende_einrede": "Boolean. True if another rechtshemmende Einrede applies.",
+    "sonstige_rechtshemmende_beschreibung": "String. If true, briefly describe it. Otherwise null."
+  },
+
+  "beklagtenvorbringen_allgemein": {
+    "mangelnde_aktiv_passivlegitimation": "Boolean. Wrong plaintiff or wrong defendant.",
+    "mitverschulden_schadensminderung": "Boolean. Plaintiff contributed to the damage (§ 1304 ABGB) or failed to mitigate.",
+    "bestreitet_tatbestand_komplett": "Boolean. Complete denial of the factual events.",
+    "bestreitet_nur_rechtliche_wertung": "Boolean. Admits facts, disputes legal interpretation.",
+    "bestreitet_hoehe": "Boolean. Specifically disputes the amount demanded.",
+    "bestreitet_verschulden": "Boolean. Specifically denies negligence or intent.",
+    "sonstige_allgemeine_bestreitung": "Boolean. True if there is a major defense/denial not captured anywhere else.",
+    "sonstige_allgemeine_beschreibung": "String. If true, briefly describe it. Otherwise null.",
+    "zitierte_normen_beklagter": "List of Strings. Explicitly cited paragraphs. Empty list if none."
+  }
+}"""
+
+LEGAL_ANALYSIS_USER_PROMPT = """Analysiere das folgende österreichische Zivilurteil und extrahiere die strukturierte rechtliche Analyse gemäß dem vorgegebenen Schema.
+
+Wichtig:
+- Antworte NUR mit validem JSON, kein anderer Text.
+- Setze Boolean-Felder auf false wenn nicht explizit erwähnt oder stark impliziert.
+- Setze String-Felder auf null wenn nicht zutreffend.
+- Listen: leere Liste [] wenn keine Normen zitiert werden.
+- rechtsgebiet_hauptkategorie: genau einer der Enum-Werte.
+
+URTEILSTEXT:
+{text}"""
+
+
 # ─── Evidence Description Generation Prompt ──────────────────────────────────────
-# Generiert eine faktische Beschreibung der aufgenommenen (!) Beweise aus
-# Beweiswürdigung + Feststellungen — ohne eigene Bewertung.
-# Zweck: Dieses Embedding kodiert welche Beweismittel das Gericht tatsächlich
-# aufgenommen hat, als neutralen Input für die Outcome-Prognose.
 
 EVIDENCE_DESCRIPTION_PROMPT = """Du bist ein österreichischer Zivilrechtsspezialist.
 Beschreibe auf Basis der folgenden Textabschnitte (Beweiswürdigung und Feststellungen)
@@ -153,7 +248,8 @@ FESTSTELLUNGEN:
 
 class OpenAIExtractor:
     """
-    Handles all OpenAI API interactions for legal text extraction and embedding.
+    Handles all OpenAI API interactions for legal text extraction.
+    Uses GPT-5-nano for structured data extraction — no embeddings.
     """
 
     def __init__(self, api_key: str, progress_callback: Optional[Callable] = None):
@@ -169,7 +265,7 @@ class OpenAIExtractor:
         stop=stop_after_attempt(5),
     )
     def _chat_completion(self, messages: list[dict], temperature: float = 0.0) -> str:
-        """Call GPT-4o-mini with retry logic."""
+        """Call GPT-5-nano with retry logic."""
         response = self.client.chat.completions.create(
             model=OPENAI_EXTRACTION_MODEL,
             messages=messages,
@@ -178,34 +274,12 @@ class OpenAIExtractor:
         )
         return response.choices[0].message.content
 
-    @retry(
-        retry=retry_if_exception_type((openai.RateLimitError, openai.APIConnectionError)),
-        wait=wait_exponential(multiplier=1, min=2, max=30),
-        stop=stop_after_attempt(5),
-    )
-    def _get_embedding(self, text) -> list[float]:
-        """Get embedding vector from text-embedding-3-large."""
-        if not isinstance(text, str):
-            text = json.dumps(text, ensure_ascii=False) if isinstance(text, (dict, list)) else str(text or "")
-        if not text or not text.strip():
-            return [0.0] * EMBEDDING_DIM
-
-        # Truncate text to avoid token limits (approx 8191 tokens max)
-        text = text[:32000]  # ~8000 tokens at ~4 chars/token
-
-        response = self.client.embeddings.create(
-            model=OPENAI_EMBEDDING_MODEL,
-            input=text,
-            dimensions=EMBEDDING_DIM,
-        )
-        return response.data[0].embedding
-
     def extract_structured_data(self, text: str) -> dict[str, Any]:
         """
-        Extract structured legal data from judgment text using GPT-4o-mini.
+        Extract structured legal data from judgment text using GPT-5-nano.
         Returns parsed JSON dict with case metadata and outcome.
         """
-        self._log("Extrahiere strukturierte Daten via GPT-4o-mini...", 0.2)
+        self._log("Extrahiere strukturierte Daten via GPT-5-nano...", 0.2)
 
         claim_types_str = ", ".join(f'"{c}"' for c in CLAIM_TYPES)
 
@@ -244,9 +318,6 @@ class OpenAIExtractor:
         2. GPT generiert aufgenommene_beweise — eine faktische, wertungsfreie
            Beschreibung der tatsächlich aufgenommenen Beweise — aus feststellungen
            und beweisw_rdigung.
-
-        Rückgabe enthält alle Zwischenabschnitte sowie aufgenommene_beweise.
-        generate_embeddings() verwendet nur die drei Abschnitte aus EMBEDDING_SECTIONS.
         """
         self._log("Extrahiere Textabschnitte aus Urteil...", 0.4)
 
@@ -275,7 +346,6 @@ class OpenAIExtractor:
             if isinstance(val, str):
                 return val
             if isinstance(val, dict):
-                # GPT sometimes returns {"text": "..."} or similar
                 for k in ("text", "content", "value", "inhalt"):
                     if k in val and isinstance(val[k], str):
                         return val[k]
@@ -339,31 +409,54 @@ class OpenAIExtractor:
         except json.JSONDecodeError:
             return "Keine Beweise aufgenommen."
 
-    def generate_embeddings(self, sections: dict[str, str]) -> dict[str, list[float]]:
+    def extract_legal_analysis(self, text: str) -> dict[str, Any]:
         """
-        Generate embedding vectors for each text section.
-        Returns dict mapping section name to embedding vector.
-        """
-        embeddings = {}
-        total = len(EMBEDDING_SECTIONS)
+        Extract the detailed structured legal analysis from judgment text.
 
-        for i, section_key in enumerate(EMBEDDING_SECTIONS):
-            self._log(
-                f"Generiere Embedding für: {section_key} ({i+1}/{total})...",
-                0.6 + (i / total) * 0.35,
+        This is the primary training signal — replaces embedding vectors.
+        Uses the comprehensive Austrian civil law schema covering:
+        - fall_metadaten (case metadata / legal area)
+        - klaegervorbringen_anspruchsgrundlagen (plaintiff's claims)
+        - beklagtenvorbringen_prozessual (procedural defenses)
+        - beklagtenvorbringen_materiell_rechtshindernd (claim-blocking defenses)
+        - beklagtenvorbringen_materiell_rechtsvernichtend (claim-destroying defenses)
+        - beklagtenvorbringen_materiell_rechtshemmend (claim-impeding defenses)
+        - beklagtenvorbringen_allgemein (general defenses)
+
+        Returns parsed JSON dict matching the schema.
+        """
+        self._log("Extrahiere strukturierte Legal-Analyse via GPT-5-nano...", 0.6)
+
+        # Use more text for the legal analysis (needs full context)
+        truncated_text = text[:25000]
+        if len(text) > 25000:
+            truncated_text += f"\n\n[... Text gekürzt, Gesamtlänge: {len(text)} Zeichen]"
+
+        prompt = LEGAL_ANALYSIS_USER_PROMPT.format(text=truncated_text)
+
+        messages = [
+            {"role": "system", "content": LEGAL_ANALYSIS_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
+
+        raw = self._chat_completion(messages)
+        time.sleep(OPENAI_REQUEST_DELAY_SEC)
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"Ungültige JSON-Antwort bei Legal-Analyse: {e}\nRaw: {raw[:500]}"
             )
-            text = sections.get(section_key, "")
-            embeddings[section_key] = self._get_embedding(text)
-            time.sleep(OPENAI_REQUEST_DELAY_SEC)
 
-        return embeddings
+        return self._validate_legal_analysis(data)
 
     def process_judgment(self, text: str) -> dict[str, Any]:
         """
         Full extraction pipeline for a single judgment:
-        1. Extract structured data
-        2. Extract text sections
-        3. Generate embeddings
+        1. Extract structured metadata (outcome, streitwert, etc.)
+        2. Extract text sections (anonymized)
+        3. Extract structured legal analysis (replaces embeddings)
 
         Returns complete case dict ready for dataset storage.
         """
@@ -377,28 +470,18 @@ class OpenAIExtractor:
         sections = self.extract_text_sections(text)
         self._log("Textabschnitte extrahiert.", 0.55)
 
-        # Step 3: Embeddings
-        embeddings = self.generate_embeddings(sections)
-        self._log("Embeddings generiert.", 0.95)
+        # Step 3: Legal analysis (replaces embeddings)
+        legal_analysis = self.extract_legal_analysis(text)
+        self._log("Legal-Analyse extrahiert.", 0.95)
 
         return {
             "structured": structured,
             "sections": sections,
-            "embeddings": embeddings,
+            "legal_analysis": legal_analysis,
         }
-
-    def embed_new_case_text(self, case_sections: dict[str, str]) -> dict[str, list[float]]:
-        """
-        Embed a new case's text sections for prediction.
-        case_sections must contain: klaegervorbringen, beklagtenvorbringen,
-        aufgenommene_beweise.
-        Used when applying the model to new cases.
-        """
-        return self.generate_embeddings(case_sections)
 
     def _validate_and_normalize(self, data: dict) -> dict:
         """Validate and normalize extracted structured data."""
-        # Ensure required fields
         defaults = {
             "datum": None,
             "gericht": None,
@@ -448,3 +531,135 @@ class OpenAIExtractor:
                 data["streitwert_eur"] = None
 
         return data
+
+    def _validate_legal_analysis(self, data: dict) -> dict:
+        """Validate and normalize the legal analysis output."""
+        from config import LEGAL_ANALYSIS_BOOL_FIELDS, RECHTSGEBIET_CATEGORIES
+
+        # Ensure all top-level sections exist
+        sections_defaults = {
+            "fall_metadaten": {},
+            "klaegervorbringen_anspruchsgrundlagen": {},
+            "beklagtenvorbringen_prozessual": {},
+            "beklagtenvorbringen_materiell_rechtshindernd": {},
+            "beklagtenvorbringen_materiell_rechtsvernichtend": {},
+            "beklagtenvorbringen_materiell_rechtshemmend": {},
+            "beklagtenvorbringen_allgemein": {},
+        }
+
+        for section, default in sections_defaults.items():
+            if section not in data or not isinstance(data[section], dict):
+                data[section] = default
+
+        # Validate rechtsgebiet_hauptkategorie
+        fm = data["fall_metadaten"]
+        rg = fm.get("rechtsgebiet_hauptkategorie", "Sonstiges")
+        if rg not in RECHTSGEBIET_CATEGORIES:
+            fm["rechtsgebiet_hauptkategorie"] = "Sonstiges"
+
+        # Ensure all boolean fields exist and are boolean
+        for section_key, fields in LEGAL_ANALYSIS_BOOL_FIELDS.items():
+            section = data.get(section_key, {})
+            for field in fields:
+                val = section.get(field)
+                section[field] = bool(val) if val is not None else False
+            data[section_key] = section
+
+        # Ensure list fields exist
+        ka = data["klaegervorbringen_anspruchsgrundlagen"]
+        if not isinstance(ka.get("zitierte_normen_klaeger"), list):
+            ka["zitierte_normen_klaeger"] = []
+
+        ba = data["beklagtenvorbringen_allgemein"]
+        if not isinstance(ba.get("zitierte_normen_beklagter"), list):
+            ba["zitierte_normen_beklagter"] = []
+
+        # Ensure description strings default to null
+        for section_key in [
+            "klaegervorbringen_anspruchsgrundlagen",
+            "beklagtenvorbringen_prozessual",
+            "beklagtenvorbringen_materiell_rechtshindernd",
+            "beklagtenvorbringen_materiell_rechtsvernichtend",
+            "beklagtenvorbringen_materiell_rechtshemmend",
+            "beklagtenvorbringen_allgemein",
+        ]:
+            section = data[section_key]
+            for key in list(section.keys()):
+                if key.endswith("_beschreibung") and not isinstance(section[key], str):
+                    section[key] = None
+
+        return data
+
+    @staticmethod
+    def empty_legal_analysis() -> dict:
+        """Return a valid legal_analysis with all defaults (for manual entry)."""
+        from config import LEGAL_ANALYSIS_BOOL_FIELDS
+
+        analysis = {
+            "fall_metadaten": {
+                "rechtsgebiet_hauptkategorie": "Sonstiges",
+                "verbrauchergeschaeft_kschg": False,
+                "streitwert_bekannt": False,
+            },
+            "klaegervorbringen_anspruchsgrundlagen": {
+                "vertraglich_erfuellung": False,
+                "vertraglich_gewaehrleistung": False,
+                "vertraglich_poenale": False,
+                "quasi_vertraglich": False,
+                "schadenersatz_ex_contractu": False,
+                "schadenersatz_ex_delicto": False,
+                "bereicherung": False,
+                "dinglich_eigentum": False,
+                "dinglich_besitz": False,
+                "unterlassung_beseitigung": False,
+                "sonstige_anspruchsgrundlage": False,
+                "sonstige_anspruchsgrundlage_beschreibung": None,
+                "zitierte_normen_klaeger": [],
+            },
+            "beklagtenvorbringen_prozessual": {
+                "unzuständigkeit": False,
+                "streitanhaengigkeit_rechtskraft": False,
+                "mangelnde_partei_prozessfaehigkeit": False,
+                "sonstiges_prozesshindernis": False,
+                "sonstiges_prozesshindernis_beschreibung": None,
+            },
+            "beklagtenvorbringen_materiell_rechtshindernd": {
+                "mangelnde_geschaeftsfaehigkeit": False,
+                "dissens_scherz_scheinvertrag": False,
+                "sittenwidrigkeit_gesetzwidrigkeit": False,
+                "formmangel": False,
+                "irrtum_list_drohung": False,
+                "laesio_enormis_wucher": False,
+                "sonstige_rechtshindernde_einwendung": False,
+                "sonstige_rechtshindernde_beschreibung": None,
+            },
+            "beklagtenvorbringen_materiell_rechtsvernichtend": {
+                "erfuellung_zahlung": False,
+                "aufrechnung_kompensation": False,
+                "ruecktritt_kuendigung": False,
+                "unmoeglichkeit": False,
+                "verzicht_erlass": False,
+                "sonstige_rechtsvernichtende_einwendung": False,
+                "sonstige_rechtsvernichtende_beschreibung": None,
+            },
+            "beklagtenvorbringen_materiell_rechtshemmend": {
+                "verjaehrung_praeklusion": False,
+                "zug_um_zug_einrede": False,
+                "zurueckbehaltungsrecht": False,
+                "mangelnde_faelligkeit_stundung": False,
+                "sonstige_rechtshemmende_einrede": False,
+                "sonstige_rechtshemmende_beschreibung": None,
+            },
+            "beklagtenvorbringen_allgemein": {
+                "mangelnde_aktiv_passivlegitimation": False,
+                "mitverschulden_schadensminderung": False,
+                "bestreitet_tatbestand_komplett": False,
+                "bestreitet_nur_rechtliche_wertung": False,
+                "bestreitet_hoehe": False,
+                "bestreitet_verschulden": False,
+                "sonstige_allgemeine_bestreitung": False,
+                "sonstige_allgemeine_beschreibung": None,
+                "zitierte_normen_beklagter": [],
+            },
+        }
+        return analysis

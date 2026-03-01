@@ -2,14 +2,11 @@
 Feature Engineer: Transforms raw case data into numeric tensors
 suitable for the neural network.
 
-Handles:
-- Structured feature encoding (claim types, defenses, streitwert, etc.)
-- Embedding loading and stacking
-- Train/val split
-- Feature normalization
+v2.0 — Structured data only, no embeddings.
+Encodes both the original case metadata AND the detailed legal analysis
+schema into a single feature vector (~77 dimensions).
 """
 
-import json
 import math
 import pickle
 import sys
@@ -24,9 +21,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
     CLAIM_TYPES,
     DEFENSE_TYPES,
-    EMBEDDING_DIM,
-    EMBEDDING_SECTIONS,
-    ENCODER_FILE,
+    LEGAL_ANALYSIS_BOOL_FIELDS,
+    LEGAL_ANALYSIS_LIST_FIELDS,
+    RECHTSGEBIET_CATEGORIES,
     SCALER_FILE,
     TRAINING_CONFIG,
 )
@@ -34,20 +31,26 @@ from config import (
 
 class FeatureEngineer:
     """
-    Transforms case metadata into numeric feature vectors.
+    Transforms case metadata + legal analysis into numeric feature vectors.
 
-    Structured features include:
-    - log(streitwert) — normalized  [1]
-    - claim_type — one-hot          [len(CLAIM_TYPES)+1]
-    - defense flags                 [len(DEFENSE_TYPES)]
-    - plaintiff_evidence_count      [1]
-    - defendant_evidence_count      [1]
-    - legal_basis_count             [1]
-    - court_level                   [4] (BG/LG/OLG/OGH one-hot)
-    - sachverstaendiger             [1]
-    - has_aufrechnung               [1] (already in defense, redundant but useful)
-    ─────────────────────────────────────────────────────
-    Total: 1 + (len(CLAIM_TYPES)+1) + len(DEFENSE_TYPES) + 1 + 1 + 1 + 4 + 1 = varies
+    Feature groups:
+    A) From original structured data:
+       - log(streitwert)                          [1]
+       - claim_type one-hot                        [len(CLAIM_TYPES)+1]
+       - defense flags (legacy)                    [len(DEFENSE_TYPES)]
+       - plaintiff_evidence_count                  [1]
+       - defendant_evidence_count                  [1]
+       - legal_basis_count                         [1]
+       - court_level one-hot (BG/LG/OLG/OGH)      [4]
+       - sachverstaendiger                         [1]
+
+    B) From legal_analysis:
+       - rechtsgebiet_hauptkategorie one-hot       [len(RECHTSGEBIET_CATEGORIES)]
+       - all boolean fields from schema            [~41]
+       - zitierte_normen_klaeger count             [1]
+       - zitierte_normen_beklagter count           [1]
+
+    Total: ~77 features (exact count depends on config lists)
     """
 
     INSTANZ_CLASSES = ["BG", "LG", "OLG", "OGH"]
@@ -65,6 +68,8 @@ class FeatureEngineer:
 
     def _compute_feature_dim(self) -> int:
         n = 0
+
+        # A) Original structured features
         n += 1                          # log_streitwert
         n += len(CLAIM_TYPES) + 1       # claim_type one-hot (+1 for "other")
         n += len(DEFENSE_TYPES)         # defense flags
@@ -73,21 +78,32 @@ class FeatureEngineer:
         n += 1                          # anspruchsgruende count
         n += len(self.INSTANZ_CLASSES)  # court level one-hot
         n += 1                          # sachverstaendiger
+
+        # B) Legal analysis features
+        n += len(RECHTSGEBIET_CATEGORIES)  # rechtsgebiet one-hot
+        for section_fields in LEGAL_ANALYSIS_BOOL_FIELDS.values():
+            n += len(section_fields)
+        for section_fields in LEGAL_ANALYSIS_LIST_FIELDS.values():
+            n += len(section_fields)  # count per list field
+
         return n
 
     def encode_case(self, case: dict) -> np.ndarray:
         """
-        Encode a single case's structured data to a feature vector.
+        Encode a single case's structured data + legal analysis to a feature vector.
         """
         s = case.get("structured", {})
+        la = case.get("legal_analysis", {})
         features = []
+
+        # ── A) Original structured features ──────────────────────────────────────
 
         # 1. Log-normalized Streitwert
         sw = s.get("streitwert_eur")
         if sw and sw > 0:
             features.append(math.log1p(sw))
         else:
-            features.append(0.0)  # 0 = unknown/zero
+            features.append(0.0)
 
         # 2. Claim type (one-hot)
         claim_type = s.get("anspruchsart", "Andere")
@@ -95,10 +111,10 @@ class FeatureEngineer:
         if claim_type in CLAIM_TYPES:
             claim_vec[CLAIM_TYPES.index(claim_type)] = 1.0
         else:
-            claim_vec[-1] = 1.0  # "Andere"
+            claim_vec[-1] = 1.0
         features.extend(claim_vec)
 
-        # 3. Defense flags
+        # 3. Defense flags (legacy)
         einwendungen = s.get("einwendungen", {})
         for defense in DEFENSE_TYPES:
             features.append(1.0 if einwendungen.get(defense) else 0.0)
@@ -119,6 +135,32 @@ class FeatureEngineer:
 
         # 7. Expert witness
         features.append(1.0 if s.get("sachverstaendiger_bestellt") else 0.0)
+
+        # ── B) Legal analysis features ───────────────────────────────────────────
+
+        # 8. Rechtsgebiet one-hot
+        fm = la.get("fall_metadaten", {})
+        rg = fm.get("rechtsgebiet_hauptkategorie", "Sonstiges")
+        rg_vec = [0.0] * len(RECHTSGEBIET_CATEGORIES)
+        if rg in RECHTSGEBIET_CATEGORIES:
+            rg_vec[RECHTSGEBIET_CATEGORIES.index(rg)] = 1.0
+        else:
+            # Default to "Sonstiges" (last element)
+            rg_vec[-1] = 1.0
+        features.extend(rg_vec)
+
+        # 9. All boolean fields from legal analysis schema
+        for section_key, fields in LEGAL_ANALYSIS_BOOL_FIELDS.items():
+            section = la.get(section_key, {})
+            for field in fields:
+                features.append(1.0 if section.get(field) else 0.0)
+
+        # 10. List fields (count of items)
+        for section_key, fields in LEGAL_ANALYSIS_LIST_FIELDS.items():
+            section = la.get(section_key, {})
+            for field in fields:
+                val = section.get(field, [])
+                features.append(float(len(val)) if isinstance(val, list) else 0.0)
 
         return np.array(features, dtype=np.float32)
 
@@ -164,10 +206,9 @@ class FeatureEngineer:
 
 class LitigationDataset(torch.utils.data.Dataset):
     """
-    PyTorch Dataset for litigation cases.
+    PyTorch Dataset for litigation cases (structured features only).
 
     Each item returns:
-    - embeddings: list of 5 tensors (one per section), each shape (EMBEDDING_DIM,)
     - structured: tensor of shape (feature_dim,)
     - label: int (0, 1, 2)
     """
@@ -175,18 +216,15 @@ class LitigationDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         cases: list[dict],
-        embeddings_dict: dict[str, dict[str, np.ndarray]],
         structured_features: np.ndarray,
     ):
         self.cases = cases
-        self.embeddings_dict = embeddings_dict
         self.structured_features = structured_features
 
-        # Filter to cases that have all required data
+        # Filter to cases that have outcome label
         self.valid_indices = [
             i for i, c in enumerate(cases)
-            if c["case_id"] in embeddings_dict
-            and c["structured"].get("outcome") is not None
+            if c["structured"].get("outcome") is not None
         ]
 
     def __len__(self) -> int:
@@ -195,17 +233,6 @@ class LitigationDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx: int) -> tuple:
         case_idx = self.valid_indices[idx]
         case = self.cases[case_idx]
-        case_id = case["case_id"]
-
-        # Load embeddings for each section
-        emb_data = self.embeddings_dict[case_id]
-        embeddings = []
-        for section in EMBEDDING_SECTIONS:
-            if section in emb_data:
-                vec = emb_data[section].astype(np.float32)
-            else:
-                vec = np.zeros(EMBEDDING_DIM, dtype=np.float32)
-            embeddings.append(torch.tensor(vec, dtype=torch.float32))
 
         # Structured features
         structured = torch.tensor(
@@ -215,12 +242,11 @@ class LitigationDataset(torch.utils.data.Dataset):
         # Label
         label = int(case["structured"]["outcome"])
 
-        return embeddings, structured, label
+        return structured, label
 
 
 def prepare_dataset(
     cases: list[dict],
-    embeddings_dict: dict[str, dict],
     feature_engineer: FeatureEngineer,
     val_split: float = TRAINING_CONFIG["val_split"],
     random_seed: int = TRAINING_CONFIG["random_seed"],
@@ -236,12 +262,12 @@ def prepare_dataset(
     # Encode structured features
     structured_features = feature_engineer.fit_transform(cases)
 
-    full_dataset = LitigationDataset(cases, embeddings_dict, structured_features)
+    full_dataset = LitigationDataset(cases, structured_features)
 
     if len(full_dataset) == 0:
-        raise ValueError("No valid labeled cases with embeddings found.")
+        raise ValueError("No valid labeled cases with legal analysis found.")
 
-    # Stratified split (try to keep outcome distribution)
+    # Stratified split
     indices = list(range(len(full_dataset)))
     labels = [
         full_dataset.cases[full_dataset.valid_indices[i]]["structured"]["outcome"]
@@ -280,19 +306,10 @@ class _SubsetDataset(torch.utils.data.Dataset):
 
 
 def collate_fn(batch: list) -> tuple:
-    """Custom collate for multi-section embeddings."""
-    embeddings_batch = [item[0] for item in batch]
-    structured_batch = torch.stack([item[1] for item in batch])
-    labels_batch = torch.tensor([item[2] for item in batch], dtype=torch.long)
-
-    # Transpose: (batch, n_sections, dim) → list of (batch, dim)
-    n_sections = len(EMBEDDING_SECTIONS)
-    embeddings_by_section = [
-        torch.stack([embeddings_batch[b][s] for b in range(len(batch))])
-        for s in range(n_sections)
-    ]
-
-    return embeddings_by_section, structured_batch, labels_batch
+    """Collate for structured-only data."""
+    structured_batch = torch.stack([item[0] for item in batch])
+    labels_batch = torch.tensor([item[1] for item in batch], dtype=torch.long)
+    return structured_batch, labels_batch
 
 
 def compute_class_weights(cases: list[dict]) -> torch.Tensor:

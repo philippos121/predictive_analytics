@@ -55,8 +55,10 @@ class FeatureEngineer:
 
     INSTANZ_CLASSES = ["BG", "LG", "OLG", "OGH"]
 
-    # Minimum fraction of non-zero values for a feature to be kept
-    MIN_NONZERO_RATE = 0.02
+    # Minimum fraction of non-zero values for a feature to be kept.
+    # Lowered from 0.02 — sparse legal features (e.g., rare defense types)
+    # can be highly predictive even when they fire in <2% of cases.
+    MIN_NONZERO_RATE = 0.005
 
     def __init__(self):
         self.scaler = StandardScaler()

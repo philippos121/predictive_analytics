@@ -207,25 +207,25 @@ SECTION_LABELS = {
 # und schneller zu trainieren als die bisherige Embedding-Architektur.
 #
 # Parameteranzahl ca.:
-#   StructuredEncoder (77→128→128):     ~20 K
-#   Fusion (128→64→3):                  ~8,4 K
-#   Gesamt: ~28 K  (früher: ~2,56 Mio. mit Embeddings)
+#   StructuredEncoder (features→64→32):  ~4 K
+#   Fusion (32→16→3):                    ~0.6 K
+#   Gesamt: ~5 K
 NN_CONFIG = {
-    "hidden_dims": [128, 128],       # Hidden layers for structured encoder
-    "fusion_dims": [64],             # Fusion layer(s) before classifier
-    "dropout": 0.1,                  # Reduced for 28K-param structured model (was 0.3 for embeddings)
+    "hidden_dims": [64, 32],         # Smaller encoder — reduce overfitting on sparse features
+    "fusion_dims": [16],             # Compact fusion layer
+    "dropout": 0.4,                  # Higher dropout for noisy GPT-extracted boolean features
     "num_classes": 3,                # win / partial / loss
 }
 
 # ─── Training Configuration ─────────────────────────────────────────────────────
 TRAINING_CONFIG = {
-    "epochs": 200,
-    "batch_size": 16,
-    "learning_rate": 1e-3,
-    "weight_decay": 1e-4,
-    "lr_scheduler_patience": 15,
+    "epochs": 300,
+    "batch_size": 64,
+    "learning_rate": 3e-4,
+    "weight_decay": 1e-2,
+    "lr_scheduler_patience": 20,
     "lr_scheduler_factor": 0.5,
-    "early_stopping_patience": 30,
+    "early_stopping_patience": 40,
     "val_split": 0.2,
     "random_seed": 42,
     "gradient_clip": 1.0,

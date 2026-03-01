@@ -495,12 +495,23 @@ with tab_train:
                 val_accs.append(kwargs.get("val_acc", 0))
 
                 progress_bar.progress(epoch / total)
+                # Show prediction distribution to diagnose degenerate models
+                pred_dist = kwargs.get("val_pred_dist", {})
+                dist_str = ""
+                if pred_dist:
+                    dist_str = (
+                        f" &nbsp;|&nbsp; Pred: "
+                        f"L={pred_dist.get(0, 0):.0%} "
+                        f"T={pred_dist.get(1, 0):.0%} "
+                        f"W={pred_dist.get(2, 0):.0%}"
+                    )
                 status_text.markdown(
                     f"**Epoche {epoch}/{total}** &nbsp;|&nbsp; "
                     f"Train Loss: `{kwargs.get('train_loss', 0):.4f}` &nbsp;|&nbsp; "
                     f"Val Acc: `{kwargs.get('val_acc', 0):.1%}` &nbsp;|&nbsp; "
                     f"Beste Val Acc: `{kwargs.get('best_val_acc', 0):.1%}` &nbsp;|&nbsp; "
                     f"LR: `{kwargs.get('lr', 0):.2e}`"
+                    f"{dist_str}"
                 )
 
                 if len(train_losses) > 1:

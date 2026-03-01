@@ -191,9 +191,11 @@ class LitigationTrainer:
             device=str(self.device),
         )
 
-        # Class-weighted Focal Loss
+        # Class-weighted CrossEntropy (plain CE is more stable than FocalLoss
+        # when features are noisy — FocalLoss suppresses the training signal
+        # on "hard" examples, which are most examples with sparse features)
         class_weights = compute_class_weights(cases).to(self.device)
-        criterion = FocalLoss(gamma=2.0, alpha=class_weights)
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
 
         optimizer = torch.optim.AdamW(
             model.parameters(),
@@ -248,7 +250,9 @@ class LitigationTrainer:
             train_acc = train_correct / train_total
 
             # Validate
-            val_loss, val_acc = self._evaluate(model, val_loader, criterion)
+            val_loss, val_acc, val_pred_dist = self._evaluate(
+                model, val_loader, criterion, return_pred_dist=True
+            )
 
             # Track history
             self.history["train_loss"].append(avg_train_loss)
@@ -279,6 +283,7 @@ class LitigationTrainer:
                     val_acc=val_acc,
                     best_val_acc=best_val_acc,
                     lr=optimizer.param_groups[0]["lr"],
+                    val_pred_dist=val_pred_dist,
                 )
 
             # Early stopping
@@ -382,13 +387,16 @@ class LitigationTrainer:
         model: LitigationClassifier,
         loader: Optional[DataLoader],
         criterion: nn.Module,
-    ) -> tuple[float, float]:
+        return_pred_dist: bool = False,
+    ) -> tuple[float, float] | tuple[float, float, dict]:
         """Evaluate model on validation set."""
+        empty = (0.0, 0.0, {}) if return_pred_dist else (0.0, 0.0)
         if loader is None or len(loader.dataset) == 0:
-            return 0.0, 0.0
+            return empty
 
         model.eval()
         total_loss, correct, total = 0.0, 0, 0
+        pred_counts = [0, 0, 0]
 
         with torch.no_grad():
             for struct_batch, label_batch in loader:
@@ -403,7 +411,19 @@ class LitigationTrainer:
                 correct += (preds == label_batch).sum().item()
                 total += len(label_batch)
 
-        return (total_loss / total, correct / total) if total > 0 else (0.0, 0.0)
+                for cls in range(3):
+                    pred_counts[cls] += (preds == cls).sum().item()
+
+        if total == 0:
+            return empty
+
+        result_loss = total_loss / total
+        result_acc = correct / total
+
+        if return_pred_dist:
+            dist = {cls: pred_counts[cls] / total for cls in range(3)}
+            return result_loss, result_acc, dist
+        return result_loss, result_acc
 
     def evaluate_full(self, cases: list[dict]) -> dict:
         """

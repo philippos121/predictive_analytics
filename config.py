@@ -154,46 +154,70 @@ EMBEDDING_SECTION_LABELS = {
     "beklagtenvorbringen": "Beklagten-Vorbringen",
 }
 
-# ─── Neural Network Architecture for 10 000-ruling dataset ──────────────────────
+# ─── Adaptive Neural Network Configurations ──────────────────────────────────────
+# Automatically selected in trainer.py based on n_training_cases.
+#
+# Root cause of train≫val gap (overfitting):
+#   freeze_encoders=False with a 2-layer encoder creates 1.64M learnable params
+#   in the encoders alone.  With few training cases these memorise the training
+#   set instead of generalising → train 80 % / val 50 %.
+#
+# Rule of thumb (n_train = 80 % of labeled cases):
+#   n_train < 1 500  → SMALL  : frozen encoders, tiny fusion         (~  40k params)
+#   1 500 – 5 000    → MEDIUM : 1-layer learned encoder, med. fusion  (~ 820k params)
+#   ≥ 5 000          → LARGE  : 2-layer learned encoder, full fusion  (~1.84M params)
+#
+# Parameter budgets:
+#   SMALL  — 2 enc (frozen 3072→128): 786k (no grad) + fusion [128,64]: ~36k trainable
+#   MEDIUM — 2 enc (learned 3072→128): 786k + fusion [128,64]: ~820k trainable
+#   LARGE  — 2 enc (learned 3072→256→128): 1.64M + fusion [256,128]: ~1.84M trainable
+
+# ── SMALL: < 1 500 training cases ────────────────────────────────────────────────
+# Frozen encoders prevent the 3072→128 projection from memorising.
+# Only the tiny attention + fusion head (~36k params) trains → near-zero overfit risk.
+NN_CONFIG_SMALL = {
+    "embedding_hidden_dim": 0,           # single linear layer: 3072 → 128 directly
+    "embedding_output_dim": 128,
+    "embedding_noise_std": 0.05,         # stronger noise for small data
+    "freeze_encoders": True,             # FROZEN — prevents memorisation
+    "use_section_attention": True,
+    "use_interaction_features": True,
+    "structured_dim": 0,
+    "fusion_dims": [128, 64],            # small fusion head
+    "dropout_embedding": 0.40,
+    "dropout_fusion": 0.50,
+    "num_classes": 3,
+}
+
+# ── MEDIUM: 1 500 – 5 000 training cases ─────────────────────────────────────────
+# Single-layer learned projection (3072→128) halves encoder params vs 2-layer.
+# Higher dropout + weight decay compensate for the reduced dataset size.
+NN_CONFIG_MEDIUM = {
+    "embedding_hidden_dim": 0,           # single linear layer: 3072 → 128 directly
+    "embedding_output_dim": 128,
+    "embedding_noise_std": 0.03,
+    "freeze_encoders": False,            # LEARNED single projection
+    "use_section_attention": True,
+    "use_interaction_features": True,
+    "structured_dim": 0,
+    "fusion_dims": [128, 64],
+    "dropout_embedding": 0.30,
+    "dropout_fusion": 0.45,
+    "num_classes": 3,
+}
+
+# ── LARGE: ≥ 5 000 training cases ────────────────────────────────────────────────
 # With ~8 000 training examples the model can LEARN the 3072→128 projection
-# instead of relying on a frozen random one.  A learned projection finds the
-# class-relevant directions in the embedding space; a random one does not
-# (we saw train 50 % / val 45 % with freeze_encoders=True, confirming this).
-#
-# Interaction features (use_interaction_features=True):
-#   diff = kl_enc − bk_enc  →  net directional advantage of Kläger over Beklagter
-#   prod = kl_enc * bk_enc  →  element-wise resonance (where both parties agree)
-#   Both are computed from the encoded vectors — zero extra parameters — yet
-#   directly capture the adversarial dynamics that plain concatenation misses.
-#   The scalar SectionAttention alone only weights globally; diff/prod let the
-#   fusion head see the *relative* semantic positions per case.
-#
-# Parameter budget  (emb_hidden=256, emb_out=128, interaction=True, fusion=[256,128]):
-#   2 encoders:   2 × (3072×256+256 + 256×128+128)  = 1 639 168  ← learned (2-layer)
-#                   first step  3072→256 : 12× compression (was 24×)
-#                   second step  256→128 : nonlinear selective refinement
-#   interaction:  0  (diff + prod computed, not learned)
-#   attention:    128×1 + 1                          =      129   ← learned
-#   fusion:       640×256+256 + LN(256)              =  165 120   ← learned
-#                 256×128+128 + LN(128)              =   33 152   ← learned
-#   classifier:   128×2 + 2                          =      258   ← learned (ordinal: 2 thresholds)
-#   ──────────────────────────────────────────────────────────────
-#   Total                                             ≈ 1 837 827  (~230 params/example @ 8 000 training)
+# instead of relying on a frozen one.  A learned projection finds the
+# class-relevant directions in the embedding space.
 #
 # Fusion input breakdown:
 #   kl_enc(128) + bk_enc(128) + diff(128) + prod(128) + attended(128) = 640
-#
-# Regularisation mix:
-#   • dropout_embedding 0.20  — encoder regularisation
-#   • dropout_fusion    0.35  — fusion regularisation
-#   • Gaussian noise std 0.01 — stochastic input perturbation
-#   • weight_decay 1e-3, label_smoothing 0.1, mixup 0.3, SWA (last 40 % epochs)
-
 NN_CONFIG = {
     "embedding_hidden_dim": 256,         # two-layer encoder: 3072 → 256 → 128
     "embedding_output_dim": 128,         # learned — finds class-relevant directions
     "embedding_noise_std": 0.01,         # light Gaussian noise on raw embeddings
-    "freeze_encoders": False,            # LEARNED projection (needs 7 500+ training cases)
+    "freeze_encoders": False,            # LEARNED projection (needs 5 000+ training cases)
     "use_section_attention": True,       # attention over klaeger + beklagter
     "use_interaction_features": True,    # diff + prod of encoded sections (zero extra params)
     "structured_dim": 0,                 # embeddings only
@@ -204,7 +228,7 @@ NN_CONFIG = {
 }
 
 # ─── Training Configuration ──────────────────────────────────────────────────────
-# Tuned for ~10 000 labeled rulings (8 000 train / 2 000 val with val_split=0.20).
+# Base config — trainer.py overrides epochs/weight_decay/batch_size adaptively.
 # User-settable UI params (epochs, learning_rate, early_stopping_patience)
 # are applied on top of these defaults when changed in the sidebar.
 
@@ -212,7 +236,7 @@ TRAINING_CONFIG = {
     "epochs": 300,
     "batch_size": 64,                 # larger batch for larger dataset
     "learning_rate": 2e-4,            # slightly lower LR for larger learned encoder
-    "weight_decay": 1e-3,             # stronger L2 to regularise ~920k params
+    "weight_decay": 1e-3,             # L2 regularisation
     "lr_scheduler_patience": 30,
     "lr_scheduler_factor": 0.5,
     "early_stopping_patience": 50,

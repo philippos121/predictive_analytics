@@ -20,6 +20,8 @@ from config import (
     KNN_THRESHOLD,
     MODEL_CHECKPOINT,
     NN_CONFIG,
+    NN_CONFIG_MEDIUM,
+    NN_CONFIG_SMALL,
     SCALER_FILE,
     TRAINING_CONFIG,
     TRAINING_HISTORY_FILE,
@@ -176,18 +178,39 @@ class LitigationTrainer:
         # ── Architecture + training config ────────────────────────────────────────
         # User-supplied overrides (epochs / lr / early_stop from UI) take
         # precedence over the base TRAINING_CONFIG for those three keys.
-        active_nn_config = NN_CONFIG
+        #
+        # Adaptive NN config selection based on training set size.
+        # Prevents the classic train≫val overfit caused by a 1.84M-param encoder
+        # memorising small datasets.
+        #   < 1 500 training examples → SMALL  (frozen encoders, ~40k trainable)
+        #   1 500 – 5 000             → MEDIUM (1-layer learned, ~820k trainable)
+        #   ≥ 5 000                   → LARGE  (2-layer learned, ~1.84M trainable)
+        n_train_est = int(n_labeled * (1.0 - TRAINING_CONFIG["val_split"]))
+        if n_train_est < 1500:
+            active_nn_config = NN_CONFIG_SMALL
+            _adaptive_overrides = {"weight_decay": 5e-3, "epochs": 150, "batch_size": 32}
+        elif n_train_est < 5000:
+            active_nn_config = NN_CONFIG_MEDIUM
+            _adaptive_overrides = {"weight_decay": 3e-3, "epochs": 200, "batch_size": 48}
+        else:
+            active_nn_config = NN_CONFIG
+            _adaptive_overrides = {}
+
         _label_smoothing = TRAINING_CONFIG["label_smoothing"]
 
         USER_KEYS = {"epochs", "learning_rate", "early_stopping_patience"}
         effective_config = {
             **TRAINING_CONFIG,
+            **_adaptive_overrides,
             **{k: v for k, v in self.config.items() if k in USER_KEYS},
         }
 
         self._log(
             phase="config_selected",
             n_labeled=n_labeled,
+            n_train_est=n_train_est,
+            nn_tier="small" if n_train_est < 1500 else ("medium" if n_train_est < 5000 else "large"),
+            freeze_encoders=active_nn_config["freeze_encoders"],
             dropout_emb=active_nn_config["dropout_embedding"],
             weight_decay=effective_config["weight_decay"],
         )

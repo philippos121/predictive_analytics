@@ -38,6 +38,7 @@ class EmbeddingEncoder(nn.Module):
     ):
         super().__init__()
         self.encoder = nn.Sequential(
+            nn.Dropout(dropout),  # input dropout: prevent memorising raw embeddings
             nn.Linear(input_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.GELU(),
@@ -65,7 +66,7 @@ class StructuredEncoder(nn.Module):
             nn.Linear(input_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.GELU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.3),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

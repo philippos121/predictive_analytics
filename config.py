@@ -232,8 +232,8 @@ NN_CONFIG = {
     "embedding_output_dim": 64,      # Output dim per embedding encoder
     "structured_hidden_dim": 32,     # Structured feature encoder hidden dim
     "fusion_dims": [64],             # Fusion layer dimensions (compact)
-    "dropout_embedding": 0.3,        # Dropout for embedding encoders
-    "dropout_fusion": 0.4,           # Dropout for fusion layers
+    "dropout_embedding": 0.5,        # Dropout for embedding encoders
+    "dropout_fusion": 0.5,           # Dropout for fusion layers
     "num_classes": 3,                # win / partial / loss
 }
 
@@ -242,10 +242,10 @@ TRAINING_CONFIG = {
     "epochs": 200,
     "batch_size": 64,
     "learning_rate": 3e-4,
-    "weight_decay": 1e-2,
-    "lr_scheduler_patience": 15,
+    "weight_decay": 5e-2,
+    "lr_scheduler_patience": 7,
     "lr_scheduler_factor": 0.5,
-    "early_stopping_patience": 30,
+    "early_stopping_patience": 12,
     "val_split": 0.2,
     "random_seed": 42,
     "gradient_clip": 1.0,

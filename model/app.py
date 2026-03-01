@@ -323,7 +323,7 @@ with st.sidebar:
     epochs = st.slider("Max. Epochen", 50, 500, TRAINING_CONFIG["epochs"], 50)
     lr = st.select_slider(
         "Lernrate",
-        [1e-4, 5e-4, 1e-3, 5e-3],
+        [1e-4, 3e-4, 5e-4, 1e-3, 5e-3],
         value=TRAINING_CONFIG["learning_rate"],
         format_func=lambda x: f"{x:.0e}",
     )

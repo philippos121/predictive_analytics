@@ -63,10 +63,8 @@ class KNNLitigationPredictor:
         if not labeled:
             raise ValueError("Keine gültigen Trainingsfälle für kNN gefunden.")
 
-        # Encode features — use the already-fitted scaler
-        features = feature_engineer.encode_batch(labeled)
-        if feature_engineer.is_fitted:
-            features = feature_engineer.scaler.transform(features)
+        # Encode features — use fitted feature selection + scaler
+        features = feature_engineer.transform(labeled)
 
         labels = [int(c["structured"]["outcome"]) for c in labeled]
 

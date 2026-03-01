@@ -246,6 +246,11 @@ class LitigationPredictor:
             for field in fields:
                 feature_names.append(f"la_{section_key}_{field}_count")
 
+        # Apply same feature mask used during training
+        mask = self.trainer.feature_engineer._feature_mask
+        if mask is not None:
+            feature_names = [n for n, keep in zip(feature_names, mask) if keep]
+
         # Get encoder first-layer weights as proxy for importance
         weights = self.model.encoder[0].weight.data.abs()
         importance = weights.mean(dim=0).cpu().numpy()

@@ -55,10 +55,14 @@ class FeatureEngineer:
 
     INSTANZ_CLASSES = ["BG", "LG", "OLG", "OGH"]
 
+    # Minimum fraction of non-zero values for a feature to be kept
+    MIN_NONZERO_RATE = 0.02
+
     def __init__(self):
         self.scaler = StandardScaler()
         self.is_fitted = False
         self._feature_dim = None
+        self._feature_mask = None  # Boolean mask for selected features
 
     @property
     def feature_dim(self) -> int:
@@ -169,38 +173,49 @@ class FeatureEngineer:
         return np.stack([self.encode_case(c) for c in cases])
 
     def fit_transform(self, cases: list[dict]) -> np.ndarray:
-        """Fit scaler on training data and transform."""
-        X = self.encode_batch(cases)
-        X_scaled = self.scaler.fit_transform(X)
+        """Fit feature selector + scaler on training data, then transform."""
+        X_raw = self.encode_batch(cases)
+
+        # Drop near-zero-variance features (mostly-empty legal_analysis booleans)
+        nonzero_rate = (X_raw != 0).mean(axis=0)
+        self._feature_mask = nonzero_rate >= self.MIN_NONZERO_RATE
+        X_selected = X_raw[:, self._feature_mask]
+
+        X_scaled = self.scaler.fit_transform(X_selected)
         self.is_fitted = True
-        self._feature_dim = X.shape[1]
+        self._feature_dim = X_selected.shape[1]
         return X_scaled
 
     def transform(self, cases: list[dict]) -> np.ndarray:
-        """Transform using fitted scaler."""
+        """Transform using fitted selector + scaler."""
         if not self.is_fitted:
             raise RuntimeError("FeatureEngineer not fitted. Call fit_transform first.")
-        X = self.encode_batch(cases)
-        return self.scaler.transform(X)
+        X_raw = self.encode_batch(cases)
+        return self.scaler.transform(X_raw[:, self._feature_mask])
 
     def encode_single_transform(self, case: dict) -> np.ndarray:
-        """Encode and scale a single case (for inference)."""
+        """Encode, select, and scale a single case (for inference)."""
         if not self.is_fitted:
             raise RuntimeError("FeatureEngineer not fitted.")
         x = self.encode_case(case)
-        return self.scaler.transform(x.reshape(1, -1))[0]
+        return self.scaler.transform(x[self._feature_mask].reshape(1, -1))[0]
 
     def save(self, path: Path = SCALER_FILE) -> None:
-        """Persist the fitted scaler."""
+        """Persist the fitted scaler and feature mask."""
         with open(path, "wb") as f:
-            pickle.dump({"scaler": self.scaler, "feature_dim": self._feature_dim}, f)
+            pickle.dump({
+                "scaler": self.scaler,
+                "feature_dim": self._feature_dim,
+                "feature_mask": self._feature_mask,
+            }, f)
 
     def load(self, path: Path = SCALER_FILE) -> None:
-        """Load a previously fitted scaler."""
+        """Load a previously fitted scaler and feature mask."""
         with open(path, "rb") as f:
             data = pickle.load(f)
         self.scaler = data["scaler"]
         self._feature_dim = data.get("feature_dim")
+        self._feature_mask = data.get("feature_mask")
         self.is_fitted = True
 
 

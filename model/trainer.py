@@ -145,11 +145,18 @@ class LitigationTrainer:
 
         train_ds, val_ds, full_ds, feature_dim = self.prepare_data(cases)
 
+        # Report feature selection results
+        raw_dim = self.feature_engineer._compute_feature_dim()
+        mask = self.feature_engineer._feature_mask
+        n_dropped = int((~mask).sum()) if mask is not None else 0
+
         self._log(
             phase="prepared",
             train_size=len(train_ds),
             val_size=len(val_ds),
             feature_dim=feature_dim,
+            features_dropped=n_dropped,
+            features_raw=raw_dim,
         )
 
         if len(train_ds) < 2:

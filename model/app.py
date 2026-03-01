@@ -470,10 +470,15 @@ with tab_train:
                 )
 
             elif phase == "prepared":
-                st.session_state.training_log.append(
+                dropped = kwargs.get("features_dropped", 0)
+                raw = kwargs.get("features_raw", kwargs["feature_dim"])
+                msg = (
                     f'[OK]  Train: {kwargs["train_size"]} | Val: {kwargs["val_size"]} | '
                     f'Features: {kwargs["feature_dim"]}'
                 )
+                if dropped:
+                    msg += f' (dropped {dropped}/{raw} low-variance)'
+                st.session_state.training_log.append(msg)
 
             elif phase == "model_built":
                 st.session_state.training_log.append(

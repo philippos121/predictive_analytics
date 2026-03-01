@@ -352,7 +352,7 @@ def build_toc() -> list:
         ("3.1", "Übersicht", "  "),
         ("3.2", "PDF-Verarbeitung", "  "),
         ("3.3", "OpenAI-Extraktion", "  "),
-        ("3.4", "Text-Embeddings", "  "),
+        ("3.4", "Strukturierte Legal-Analyse", "  "),
         ("3.5", "Datenspeicherung", "  "),
         ("3.6", "Benutzeroberfläche", "  "),
         ("4", "Machine Learning Modell (Programm 2)", ""),
@@ -462,9 +462,9 @@ def build_section_2() -> list:
     story.extend(bullet_list([
         "Python 3.10 oder höher (empfohlen: 3.11)",
         "pip (Python-Paketmanager)",
-        "OpenAI API Key (für Extraktion und Embeddings)",
+        "OpenAI API Key (für Extraktion und Legal-Analyse)",
         "Mindestens 4 GB RAM (8 GB empfohlen)",
-        "Festplattenspeicher: ca. 2 GB pro 100 Urteile (Embeddings)",
+        "Festplattenspeicher: ca. 50 MB pro 1.000 Urteile (JSON)",
         "GPU optional (CUDA 11.8+) für schnelleres Training",
     ]))
 
@@ -551,7 +551,7 @@ def build_section_3() -> list:
 
     story.append(Paragraph("3.3 OpenAI-Extraktion (openai_extractor.py)", S["h2"]))
     story.append(Paragraph(
-        "Das gpt-4o-mini Modell extrahiert strukturierte Rechtsdaten aus dem Urteilstext. "
+        "Das GPT-5-nano Modell extrahiert strukturierte Rechtsdaten aus dem Urteilstext. "
         "Das Extraktionsschema umfasst:",
         S["body"],
     ))
@@ -637,20 +637,18 @@ def build_section_4() -> list:
 
     story.append(Paragraph("4.1 Architektur-Übersicht", S["h2"]))
     story.append(Paragraph(
-        "Das LitigationClassifier-Netzwerk kombiniert semantische Textvektoren mit "
-        "strukturierten Rechtsmerkamalen in einem Multi-Input-Fusionsnetzwerk. "
+        "Das LitigationClassifier-Netzwerk verarbeitet strukturierte Rechtsmerkmale "
+        "(Original-Metadaten + Legal-Analyse-Features) in einem kompakten Feed-Forward-Netzwerk. "
         "Es gibt drei Klassen aus: Unterliegen (0), Teilweises Obsiegen (1), Obsiegen (2).",
         S["body"],
     ))
 
     arch_data = [
         ["Komponente", "Input", "Output", "Aktivierung"],
-        ["EmbeddingEncoder (×5)", f"3.072-dim\n(je Abschnitt)", "256-dim", "GELU + LayerNorm\n+ Dropout"],
-        ["StructuredEncoder (×1)", f"~27-dim\nstrukturierte Features", "64-dim", "GELU + LayerNorm"],
-        ["Fusion (Concat)", "5×256 + 64\n= 1.344-dim", "512-dim", "GELU + Dropout"],
-        ["Fusion Layer 2", "512-dim", "256-dim", "GELU + Dropout"],
-        ["Fusion Layer 3", "256-dim", "128-dim", "GELU"],
-        ["Classifier", "128-dim", "3-dim", "Softmax"],
+        ["Encoder Layer 1", "~77-dim\nstrukturierte Features", "128-dim", "GELU + LayerNorm\n+ Dropout"],
+        ["Encoder Layer 2", "128-dim", "128-dim", "GELU + LayerNorm\n+ Dropout"],
+        ["Fusion Layer", "128-dim", "64-dim", "GELU + Dropout"],
+        ["Classifier", "64-dim", "3-dim", "Softmax"],
     ]
 
     t = Table(arch_data, colWidths=[4.5 * cm, 4 * cm, 3 * cm, 5.5 * cm])
@@ -692,7 +690,10 @@ def build_section_4() -> list:
         ["Anspruchsgrundlagen", "Anzahl (Integer)", "1"],
         ["Instanz", "One-Hot (BG/LG/OLG/OGH)", "4"],
         ["Sachverständiger", "Binary Flag", "1"],
-        ["GESAMT", "", f"~{1 + len(CLAIM_TYPES) + 1 + len(DEFENSE_TYPES) + 4 + 4}"],
+        ["Rechtsgebiet", "One-Hot (8 Kategorien)", "8"],
+        ["Legal-Analyse Booleans", "42 Boolean-Felder (Ansprüche + Einwendungen)", "42"],
+        ["Zitierte Normen", "Anzahl Kläger + Beklagter", "2"],
+        ["GESAMT", "", "~77"],
     ]
 
     t3 = Table(feat_data, colWidths=[6 * cm, 8 * cm, 3 * cm])
@@ -849,7 +850,7 @@ def build_section_6() -> list:
     story.append(Paragraph("Datenhaltung:", S["h2"]))
     story.extend(bullet_list([
         "Alle Daten bleiben lokal auf dem Kanzleirechner (kein Cloud-Upload der Falldaten)",
-        "OpenAI-API: Nur Urteilstexte werden an OpenAI übermittelt (für Extraktion/Embeddings)",
+        "OpenAI-API: Nur Urteilstexte werden an OpenAI übermittelt (für Extraktion/Legal-Analyse)",
         "OpenAI's Data Usage Policy: Daten werden nicht für Training verwendet (API-Nutzung)",
         "Kein persistenter Zugriff Dritter auf das Dataset",
     ]))

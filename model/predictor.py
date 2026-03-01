@@ -15,17 +15,12 @@ from typing import Optional
 import numpy as np
 import torch
 
-from model.ratg_calculator import RATGKostenrechnung
-
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
-    DEFENSE_LABELS,
     DEFENSE_TYPES,
-    OUTCOME_COLORS,
     OUTCOME_LABELS,
 )
-from model.feature_engineer import FeatureEngineer
-from model.neural_net import LitigationClassifier
+from model.ratg_calculator import RATGKostenrechnung
 from model.trainer import LitigationTrainer
 
 

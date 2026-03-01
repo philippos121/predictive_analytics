@@ -938,7 +938,7 @@ with tab_manual:
     )
 
     if not st.session_state.api_key:
-        st.warning("OpenAI API Key erforderlich für Embedding-Generierung.")
+        st.warning("OpenAI API Key erforderlich für Legal-Analyse-Generierung.")
 
     with st.form("manual_entry_form"):
         st.markdown("**Grunddaten**")
@@ -1032,7 +1032,7 @@ with tab_manual:
             )
 
         submitted = st.form_submit_button(
-            "Fall speichern und Embeddings generieren",
+            "Fall speichern",
             type="primary",
         )
 

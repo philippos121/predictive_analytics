@@ -811,7 +811,7 @@ with tab_predict:
                             DEFENSE_LABELS.get(d, d), key=f"pred_ew_{d}"
                         )
 
-                st.markdown("**Textvorbringen & Beweise** (für Embedding-Vektoren)")
+                st.markdown("**Textvorbringen & Beweise**")
                 p_klaeger_text = st.text_area(
                     "Kläger-Vorbringen",
                     placeholder="Beschreiben Sie das Vorbringen des Klägers...",
@@ -855,7 +855,12 @@ with tab_predict:
                     "klaeger_beweismittel": [""] * p_klaeger_beweismittel,
                     "beklagter_beweismittel": [""] * p_beklagter_beweismittel,
                     "sachverstaendiger_bestellt": p_sv,
-                }
+                },
+                "sections": {
+                    "klaegervorbringen": p_klaeger_text,
+                    "beklagtenvorbringen": p_beklagter_text,
+                    "aufgenommene_beweise": p_aufgenommene_beweise,
+                },
             }
 
             # Use empty legal analysis for quick prediction from form
@@ -974,7 +979,7 @@ with tab_ev:
                 juristic_estimate = st.slider(
                     "Juristische Erfolgseinschätzung",
                     0.0, 1.0, 0.6, 0.05,
-                    format="%.0f%%",
+                    format="%.2f",
                     help="Einschätzung des juristischen KI-Assistenten (0 = keine Chance, 1 = sicher)",
                 )
                 w_ml = st.slider(

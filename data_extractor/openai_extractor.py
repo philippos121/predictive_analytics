@@ -6,8 +6,11 @@ v2.0 — No embeddings.  Instead of text-embedding-3-large vectors the extractor
 now produces a fine-grained structured legal analysis (fall_metadaten,
 klaegervorbringen, beklagtenvorbringen categories) that serves as the primary
 training signal for the prediction model.
+
+Includes AsyncBatchExtractor for parallel extraction (100 concurrent API calls).
 """
 
+import asyncio
 import json
 import sys
 import time
@@ -663,3 +666,344 @@ class OpenAIExtractor:
             },
         }
         return analysis
+
+
+class AsyncBatchExtractor:
+    """
+    Parallel batch extractor using asyncio + openai.AsyncOpenAI.
+
+    Processes cases from dataset.json with up to `max_concurrent` parallel
+    API calls to GPT-5-nano.  Each case goes through the full 3-step
+    pipeline (structured data, text sections, legal analysis).
+
+    Usage:
+        extractor = AsyncBatchExtractor(api_key="sk-...", max_concurrent=100)
+        asyncio.run(extractor.extract_dataset(dataset_path))
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        max_concurrent: int = 100,
+        progress_callback: Optional[Callable] = None,
+    ):
+        self.api_key = api_key
+        self.max_concurrent = max_concurrent
+        self.progress_callback = progress_callback or (lambda done, total, msg: None)
+        self.async_client = openai.AsyncOpenAI(api_key=api_key)
+        # Synchronous extractor for validation/normalization helpers
+        self._sync = OpenAIExtractor(api_key=api_key)
+
+    async def _async_chat_completion(
+        self,
+        messages: list[dict],
+        semaphore: asyncio.Semaphore,
+        temperature: float = 0.0,
+        max_retries: int = 5,
+    ) -> str:
+        """Single async chat completion with semaphore-based concurrency limit and retry."""
+        async with semaphore:
+            for attempt in range(max_retries):
+                try:
+                    response = await self.async_client.chat.completions.create(
+                        model=OPENAI_EXTRACTION_MODEL,
+                        messages=messages,
+                        temperature=temperature,
+                        response_format={"type": "json_object"},
+                    )
+                    return response.choices[0].message.content
+                except (openai.RateLimitError, openai.APIConnectionError) as e:
+                    if attempt < max_retries - 1:
+                        wait = min(2 ** (attempt + 1), 30)
+                        await asyncio.sleep(wait)
+                    else:
+                        raise
+
+    async def _extract_structured_data_async(
+        self, text: str, semaphore: asyncio.Semaphore,
+    ) -> dict:
+        """Async version of extract_structured_data."""
+        claim_types_str = ", ".join(f'"{c}"' for c in CLAIM_TYPES)
+        truncated_text = text[:15000]
+        if len(text) > 15000:
+            truncated_text += f"\n\n[... Text gekürzt, Gesamtlänge: {len(text)} Zeichen]"
+
+        prompt = EXTRACTION_USER_PROMPT.format(
+            claim_types_str=claim_types_str,
+            text=truncated_text,
+        )
+        messages = [
+            {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
+        raw = await self._async_chat_completion(messages, semaphore)
+        data = json.loads(raw)
+        return self._sync._validate_and_normalize(data)
+
+    async def _extract_text_sections_async(
+        self, text: str, semaphore: asyncio.Semaphore,
+    ) -> dict[str, str]:
+        """Async version of extract_text_sections."""
+        truncated_text = text[:20000]
+        prompt = SECTION_EXTRACTION_PROMPT.format(text=truncated_text)
+        messages = [
+            {
+                "role": "system",
+                "content": "Du extrahierst Textabschnitte aus Gerichtsurteilen und gibst JSON zurück."
+                " Anonymisiere alle Personennamen.",
+            },
+            {"role": "user", "content": prompt},
+        ]
+        raw = await self._async_chat_completion(messages, semaphore)
+        try:
+            raw_sections = json.loads(raw)
+        except json.JSONDecodeError:
+            raw_sections = {}
+
+        def _to_str(val) -> str:
+            if isinstance(val, str):
+                return val
+            if isinstance(val, dict):
+                for k in ("text", "content", "value", "inhalt"):
+                    if k in val and isinstance(val[k], str):
+                        return val[k]
+                return json.dumps(val, ensure_ascii=False)
+            if val is None:
+                return ""
+            return str(val)
+
+        klaegervorbringen = _to_str(raw_sections.get("klaegervorbringen", ""))
+        beklagtenvorbringen = _to_str(raw_sections.get("beklagtenvorbringen", ""))
+        feststellungen = _to_str(raw_sections.get("feststellungen", ""))
+        beweisw_rdigung = _to_str(raw_sections.get("beweisw_rdigung", ""))
+
+        # Evidence description
+        aufgenommene_beweise = await self._extract_evidence_async(
+            feststellungen, beweisw_rdigung, semaphore
+        )
+
+        return {
+            "klaegervorbringen": klaegervorbringen,
+            "beklagtenvorbringen": beklagtenvorbringen,
+            "feststellungen": feststellungen,
+            "beweisw_rdigung": beweisw_rdigung,
+            "aufgenommene_beweise": aufgenommene_beweise,
+        }
+
+    async def _extract_evidence_async(
+        self, feststellungen: str, beweisw_rdigung: str, semaphore: asyncio.Semaphore,
+    ) -> str:
+        """Async version of _generate_evidence_description."""
+        if not str(feststellungen).strip() and not str(beweisw_rdigung).strip():
+            return "Keine Beweise aufgenommen."
+
+        prompt = EVIDENCE_DESCRIPTION_PROMPT.format(
+            feststellungen=feststellungen[:8000],
+            beweisw_rdigung=beweisw_rdigung[:8000],
+        )
+        messages = [
+            {
+                "role": "system",
+                "content": "Du bist ein österreichischer Zivilrechtsspezialist. "
+                "Gib ausschließlich JSON zurück.",
+            },
+            {"role": "user", "content": prompt},
+        ]
+        raw = await self._async_chat_completion(messages, semaphore)
+        try:
+            result = json.loads(raw)
+            return result.get("aufgenommene_beweise", "Keine Beweise aufgenommen.")
+        except json.JSONDecodeError:
+            return "Keine Beweise aufgenommen."
+
+    async def _extract_legal_analysis_async(
+        self, text: str, semaphore: asyncio.Semaphore,
+    ) -> dict:
+        """Async version of extract_legal_analysis."""
+        truncated_text = text[:25000]
+        if len(text) > 25000:
+            truncated_text += f"\n\n[... Text gekürzt, Gesamtlänge: {len(text)} Zeichen]"
+
+        prompt = LEGAL_ANALYSIS_USER_PROMPT.format(text=truncated_text)
+        messages = [
+            {"role": "system", "content": LEGAL_ANALYSIS_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ]
+        raw = await self._async_chat_completion(messages, semaphore)
+        data = json.loads(raw)
+        return self._sync._validate_legal_analysis(data)
+
+    async def _process_single_case(
+        self,
+        case_idx: int,
+        case: dict,
+        semaphore: asyncio.Semaphore,
+        total: int,
+    ) -> tuple[int, dict, Optional[str]]:
+        """
+        Process a single case through the full extraction pipeline.
+        Returns (case_idx, updated_case, error_or_None).
+        """
+        case_id = case.get("case_id", f"idx_{case_idx}")
+        try:
+            # The case already has text in sections — use klaegervorbringen
+            # + beklagtenvorbringen as the source text for legal analysis,
+            # or re-extract from the original text if available.
+            # For cases already in the dataset, we just need legal_analysis.
+
+            # Build judgment text from existing sections for legal analysis
+            sections = case.get("sections", {})
+            text_parts = []
+            for key in ["klaegervorbringen", "beklagtenvorbringen",
+                        "feststellungen", "beweisw_rdigung"]:
+                sec_text = sections.get(key, "")
+                if sec_text:
+                    text_parts.append(f"[{key.upper()}]\n{sec_text}")
+
+            combined_text = "\n\n".join(text_parts)
+            if not combined_text.strip():
+                # Fallback: use structured summaries
+                s = case.get("structured", {})
+                combined_text = (
+                    f"Kläger: {s.get('klaeger_anspruch_zusammenfassung', '')}\n"
+                    f"Beklagter: {s.get('beklagter_vorbringen_zusammenfassung', '')}"
+                )
+
+            legal_analysis = await self._extract_legal_analysis_async(
+                combined_text, semaphore
+            )
+
+            case["legal_analysis"] = legal_analysis
+            done_count = self._done_counter
+            self._done_counter += 1
+            self.progress_callback(
+                self._done_counter, total,
+                f"[{self._done_counter}/{total}] {case_id} OK"
+            )
+            return case_idx, case, None
+
+        except Exception as e:
+            self._done_counter += 1
+            error_msg = f"{case_id}: {e}"
+            self.progress_callback(
+                self._done_counter, total,
+                f"[{self._done_counter}/{total}] {case_id} FEHLER: {e}"
+            )
+            return case_idx, case, error_msg
+
+    async def extract_legal_analysis_batch(
+        self,
+        cases: list[dict],
+    ) -> tuple[list[dict], list[str]]:
+        """
+        Extract legal_analysis for all cases that don't have one yet.
+        Runs up to self.max_concurrent API calls in parallel.
+
+        Args:
+            cases: List of case dicts (modified in-place with legal_analysis)
+
+        Returns:
+            (updated_cases, errors) — errors is a list of error messages
+        """
+        # Filter to cases needing extraction
+        indices_to_process = [
+            i for i, c in enumerate(cases)
+            if not c.get("legal_analysis")
+        ]
+
+        total = len(indices_to_process)
+        if total == 0:
+            self.progress_callback(0, 0, "Alle Fälle haben bereits eine Legal-Analyse.")
+            return cases, []
+
+        self.progress_callback(0, total, f"Starte Extraktion für {total} Fälle...")
+        self._done_counter = 0
+
+        semaphore = asyncio.Semaphore(self.max_concurrent)
+        tasks = [
+            self._process_single_case(idx, cases[idx], semaphore, total)
+            for idx in indices_to_process
+        ]
+
+        results = await asyncio.gather(*tasks)
+
+        errors = []
+        for case_idx, updated_case, error in results:
+            cases[case_idx] = updated_case
+            if error:
+                errors.append(error)
+
+        self.progress_callback(
+            total, total,
+            f"Fertig: {total - len(errors)} OK, {len(errors)} Fehler"
+        )
+        return cases, errors
+
+    async def extract_dataset(
+        self,
+        dataset_path: Path,
+        save_every: int = 100,
+    ) -> tuple[int, int]:
+        """
+        Load dataset.json, extract legal_analysis for all cases missing it,
+        and save back.  Periodically saves progress every `save_every` cases.
+
+        Returns (n_success, n_errors).
+        """
+        from data_extractor.data_manager import DataManager
+
+        dm = DataManager(dataset_path=dataset_path)
+        cases = dm.load_dataset()
+
+        if not cases:
+            print("Dataset ist leer.")
+            return 0, 0
+
+        # Process in chunks to enable periodic saves
+        indices_to_process = [
+            i for i, c in enumerate(cases)
+            if not c.get("legal_analysis")
+        ]
+        total = len(indices_to_process)
+
+        if total == 0:
+            print("Alle Fälle haben bereits eine Legal-Analyse.")
+            return len(cases), 0
+
+        print(f"Dataset: {len(cases)} Fälle, davon {total} ohne Legal-Analyse")
+        print(f"Starte parallele Extraktion (max {self.max_concurrent} gleichzeitig)...")
+
+        all_errors = []
+        self._done_counter = 0
+        semaphore = asyncio.Semaphore(self.max_concurrent)
+
+        # Process in chunks for periodic saves
+        for chunk_start in range(0, len(indices_to_process), save_every):
+            chunk_indices = indices_to_process[chunk_start:chunk_start + save_every]
+            chunk_total = len(chunk_indices)
+
+            tasks = [
+                self._process_single_case(idx, cases[idx], semaphore, total)
+                for idx in chunk_indices
+            ]
+
+            results = await asyncio.gather(*tasks)
+
+            for case_idx, updated_case, error in results:
+                cases[case_idx] = updated_case
+                if error:
+                    all_errors.append(error)
+
+            # Periodic save
+            dm.save_dataset(cases)
+            n_done = min(chunk_start + save_every, total)
+            print(f"  Gespeichert: {n_done}/{total} verarbeitet")
+
+        n_success = total - len(all_errors)
+        print(f"\nFertig: {n_success} erfolgreich, {len(all_errors)} Fehler")
+        if all_errors:
+            print(f"Fehler:\n" + "\n".join(f"  - {e}" for e in all_errors[:20]))
+            if len(all_errors) > 20:
+                print(f"  ... und {len(all_errors) - 20} weitere")
+
+        return n_success, len(all_errors)

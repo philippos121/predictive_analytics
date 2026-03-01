@@ -2,7 +2,7 @@
 Neural Network Architecture for Predictive Litigation Analytics.
 
 Embedding-only architecture:
-1. Text embeddings (2 sections × 3072-dim) via per-section encoders
+1. Text embeddings (2 sections × 1536-dim) via per-section encoders
    - klaegervorbringen, beklagtenvorbringen
 2. Optional cross-section attention (SectionAttention) to weight sections
 3. Flat fusion MLP for final classification

@@ -33,8 +33,8 @@ KNN_THRESHOLD = 50
 # ─── OpenAI Configuration ───────────────────────────────────────────────────────
 # gpt-5-mini: does not support temperature parameter.
 OPENAI_EXTRACTION_MODEL = "gpt-5-mini"
-OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
-EMBEDDING_DIM = 3072  # Dimension of text-embedding-3-large
+OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
+EMBEDDING_DIM = 1536  # Dimension of text-embedding-3-small
 
 # Juristische Analyse: GPT 5.2 mit Reasoning und Web-Suche (ris.bka.gv.at).
 LEGAL_ANALYSIS_MODEL = "gpt-5.2"
@@ -167,16 +167,18 @@ EMBEDDING_SECTION_LABELS = {
 #   1 500 – 5 000    → MEDIUM : 1-layer learned encoder, med. fusion  (~ 820k params)
 #   ≥ 5 000          → LARGE  : 2-layer learned encoder, full fusion  (~1.84M params)
 #
-# Parameter budgets:
-#   SMALL  — 2 enc (frozen 3072→128): 786k (no grad) + fusion [128,64]: ~36k trainable
-#   MEDIUM — 2 enc (learned 3072→128): 786k + fusion [128,64]: ~820k trainable
-#   LARGE  — 2 enc (learned 3072→256→128): 1.64M + fusion [256,128]: ~1.84M trainable
+# Parameter budgets (text-embedding-3-small, 1536-dim input):
+#   SMALL  — 2 enc (frozen 1536→128): 394k (no grad) + fusion [128,64]: ~36k trainable
+#   MEDIUM — 2 enc (learned 1536→128): 394k + fusion [128,64]: ~430k trainable
+#   LARGE  — 2 enc (learned 1536→256→128): 919k + fusion [256,128]: ~1.05M trainable
+#
+# vs. text-embedding-3-large (3072-dim): encoder params halved → less overfitting risk.
 
 # ── SMALL: < 1 500 training cases ────────────────────────────────────────────────
-# Frozen encoders prevent the 3072→128 projection from memorising.
+# Frozen encoders prevent the 1536→128 projection from memorising.
 # Only the tiny attention + fusion head (~36k params) trains → near-zero overfit risk.
 NN_CONFIG_SMALL = {
-    "embedding_hidden_dim": 0,           # single linear layer: 3072 → 128 directly
+    "embedding_hidden_dim": 0,           # single linear layer: 1536 → 128 directly
     "embedding_output_dim": 128,
     "embedding_noise_std": 0.05,         # stronger noise for small data
     "freeze_encoders": True,             # FROZEN — prevents memorisation
@@ -190,10 +192,10 @@ NN_CONFIG_SMALL = {
 }
 
 # ── MEDIUM: 1 500 – 5 000 training cases ─────────────────────────────────────────
-# Single-layer learned projection (3072→128) halves encoder params vs 2-layer.
+# Single-layer learned projection (1536→128) — half the params of the 2-layer encoder.
 # Higher dropout + weight decay compensate for the reduced dataset size.
 NN_CONFIG_MEDIUM = {
-    "embedding_hidden_dim": 0,           # single linear layer: 3072 → 128 directly
+    "embedding_hidden_dim": 0,           # single linear layer: 1536 → 128 directly
     "embedding_output_dim": 128,
     "embedding_noise_std": 0.03,
     "freeze_encoders": False,            # LEARNED single projection
@@ -207,18 +209,17 @@ NN_CONFIG_MEDIUM = {
 }
 
 # ── LARGE: ≥ 5 000 training cases ────────────────────────────────────────────────
-# With ~8 000 training examples the model can LEARN the 3072→128 projection
+# With ~8 000 training examples the model can LEARN the 1536→128 projection
 # instead of relying on a frozen one.  A learned projection finds the
 # class-relevant directions in the embedding space.
 #
 # Fusion input breakdown:
 #   kl_enc(128) + bk_enc(128) + diff(128) + prod(128) + attended(128) = 640
 #
-# Regularisation raised for 8k dataset (6 400 training samples, ~287 params/example):
-# With this params/example ratio the model still memorises case-specific noise →
-# train acc 90 % / val acc 54 %.  Higher dropout redirects capacity to real signal.
+# Regularisation raised for 8k dataset (6 400 training samples, ~160 params/example
+# with 1536-dim input — down from ~287 with 3072-dim → inherently less overfit risk).
 NN_CONFIG = {
-    "embedding_hidden_dim": 256,         # two-layer encoder: 3072 → 256 → 128
+    "embedding_hidden_dim": 256,         # two-layer encoder: 1536 → 256 → 128
     "embedding_output_dim": 128,         # learned — finds class-relevant directions
     "embedding_noise_std": 0.02,         # raised 0.01→0.02: stronger input noise regularisation
     "freeze_encoders": False,            # LEARNED projection (needs 5 000+ training cases)

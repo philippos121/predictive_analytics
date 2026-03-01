@@ -186,10 +186,10 @@ NN_CONFIG_SMALL = {
     "embedding_output_dim": 128,
     "embedding_noise_std": 0.05,         # stronger noise for small data
     "freeze_encoders": True,             # FROZEN — prevents memorisation
-    "use_section_attention": True,
-    "use_interaction_features": True,
+    "use_section_attention": False,      # disabled: adds params + high-dim noise in small data
+    "use_interaction_features": False,   # disabled: diff/prod create memorisable patterns in high-dim space
     "structured_dim": 0,
-    "fusion_dims": [128, 64],            # small fusion head
+    "fusion_dims": [128, 64],            # fusion input: 2×128 = 256 → 128 → 64
     "dropout_embedding": 0.40,
     "dropout_fusion": 0.50,
     "num_classes": 3,
@@ -203,10 +203,10 @@ NN_CONFIG_MEDIUM = {
     "embedding_output_dim": 128,
     "embedding_noise_std": 0.03,
     "freeze_encoders": False,            # LEARNED single projection
-    "use_section_attention": True,
-    "use_interaction_features": True,
+    "use_section_attention": False,      # disabled: adds memorisable signal without clear gain
+    "use_interaction_features": False,   # disabled: element-wise ops on high-dim vectors overfit
     "structured_dim": 0,
-    "fusion_dims": [128, 64],
+    "fusion_dims": [128, 64],            # fusion input: 2×128 = 256 → 128 → 64
     "dropout_embedding": 0.30,
     "dropout_fusion": 0.45,
     "num_classes": 3,
@@ -217,8 +217,8 @@ NN_CONFIG_MEDIUM = {
 # instead of relying on a frozen one.  A learned projection finds the
 # class-relevant directions in the embedding space.
 #
-# Fusion input breakdown:
-#   kl_enc(128) + bk_enc(128) + diff(128) + prod(128) + attended(128) = 640
+# Fusion input breakdown (no interaction features, no attention):
+#   kl_enc(128) + bk_enc(128) = 256
 #
 # Regularisation raised for 8k dataset (6 400 training samples, ~160 params/example
 # with 1536-dim input — down from ~287 with 3072-dim → inherently less overfit risk).
@@ -227,10 +227,10 @@ NN_CONFIG = {
     "embedding_output_dim": 128,         # learned — finds class-relevant directions
     "embedding_noise_std": 0.02,         # raised 0.01→0.02: stronger input noise regularisation
     "freeze_encoders": False,            # LEARNED projection (needs 5 000+ training cases)
-    "use_section_attention": True,       # attention over klaeger + beklagter
-    "use_interaction_features": True,    # diff + prod of encoded sections (zero extra params)
+    "use_section_attention": False,      # disabled: linear baseline first; add back only if needed
+    "use_interaction_features": False,   # disabled: diff/prod in 1536-dim space create memorisable noise
     "structured_dim": 0,                 # embeddings only
-    "fusion_dims": [256, 128],           # fusion head appropriate for 10k dataset
+    "fusion_dims": [256, 128],           # fusion input: 2×128 = 256 → 256 → 128
     "dropout_embedding": 0.40,           # raised 0.20→0.40: prevents encoder memorising noise
     "dropout_fusion": 0.45,              # raised 0.35→0.45: prevents fusion layers memorising
     "num_classes": 3,

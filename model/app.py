@@ -498,6 +498,25 @@ with tab_train:
                     log_line += f' | Features: {kwargs["feature_dim"]}'
                 st.session_state.training_log.append(log_line)
 
+            elif phase == "linear_probe":
+                if "error" in kwargs:
+                    st.session_state.training_log.append(
+                        f'[WARN] Linear Probe: {kwargs["error"]}'
+                    )
+                else:
+                    n_tr = kwargs.get("n_train", 0)
+                    n_va = kwargs.get("n_val", 0)
+                    base = kwargs.get("majority_baseline_val", 0)
+                    st.session_state.training_log.append(
+                        f'[PROBE] Linear Baseline ({n_tr} train / {n_va} val) '
+                        f'| Majority-class: {base:.1%}'
+                    )
+                    for r in kwargs.get("results", []):
+                        st.session_state.training_log.append(
+                            f'[PROBE]   C={r["C"]:.2f}: '
+                            f'train={r["train_acc"]:.1%} | val={r["val_acc"]:.1%}'
+                        )
+
             elif phase == "model_built":
                 st.session_state.training_log.append(
                     f'[OK]  Modell gebaut: {kwargs["parameters"]:,} Parameter | '

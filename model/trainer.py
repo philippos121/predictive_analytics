@@ -34,6 +34,7 @@ from model.feature_engineer import (
     prepare_dataset,
 )
 from model.knn_predictor import KNNLitigationPredictor
+from model.linear_probe import run_linear_probe
 from model.neural_net import OrdinalBCELoss, LitigationClassifier
 
 
@@ -250,6 +251,21 @@ class LitigationTrainer:
             train_size=len(train_ds),
             val_size=len(val_ds),
         )
+
+        # ── Linear probe diagnostic ───────────────────────────────────────────────
+        # Fits Logistic Regression on the raw concatenated embeddings before NN
+        # training starts.  If probe val acc ≈ NN val acc the MLP adds nothing
+        # beyond linear separation and the bottleneck is the embedding signal itself.
+        try:
+            probe = run_linear_probe(
+                cases,
+                embeddings_dict,
+                val_split=self.config["val_split"],
+                random_seed=self.config["random_seed"],
+            )
+            self._log(phase="linear_probe", **probe)
+        except Exception:
+            pass  # Probe failure must never block NN training
 
         if len(train_ds) < 2:
             raise ValueError(

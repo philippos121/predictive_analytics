@@ -194,7 +194,12 @@ class LitigationTrainer:
             _adaptive_overrides = {"weight_decay": 3e-3, "epochs": 200, "batch_size": 48}
         else:
             active_nn_config = NN_CONFIG
-            _adaptive_overrides = {}
+            # Raised weight_decay and tightened early stopping for the 8k regime:
+            # 6 400 training samples / ~1.84M params ≈ 287 params/example → still
+            # memorises noise without stronger L2.  Patience 25 stops before the
+            # memorisation phase sets in (model reaches its generalisation ceiling
+            # well before epoch 300).
+            _adaptive_overrides = {"weight_decay": 3e-3, "early_stopping_patience": 25}
 
         _label_smoothing = TRAINING_CONFIG["label_smoothing"]
 

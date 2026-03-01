@@ -213,17 +213,21 @@ NN_CONFIG_MEDIUM = {
 #
 # Fusion input breakdown:
 #   kl_enc(128) + bk_enc(128) + diff(128) + prod(128) + attended(128) = 640
+#
+# Regularisation raised for 8k dataset (6 400 training samples, ~287 params/example):
+# With this params/example ratio the model still memorises case-specific noise →
+# train acc 90 % / val acc 54 %.  Higher dropout redirects capacity to real signal.
 NN_CONFIG = {
     "embedding_hidden_dim": 256,         # two-layer encoder: 3072 → 256 → 128
     "embedding_output_dim": 128,         # learned — finds class-relevant directions
-    "embedding_noise_std": 0.01,         # light Gaussian noise on raw embeddings
+    "embedding_noise_std": 0.02,         # raised 0.01→0.02: stronger input noise regularisation
     "freeze_encoders": False,            # LEARNED projection (needs 5 000+ training cases)
     "use_section_attention": True,       # attention over klaeger + beklagter
     "use_interaction_features": True,    # diff + prod of encoded sections (zero extra params)
     "structured_dim": 0,                 # embeddings only
     "fusion_dims": [256, 128],           # fusion head appropriate for 10k dataset
-    "dropout_embedding": 0.20,
-    "dropout_fusion": 0.35,
+    "dropout_embedding": 0.40,           # raised 0.20→0.40: prevents encoder memorising noise
+    "dropout_fusion": 0.45,              # raised 0.35→0.45: prevents fusion layers memorising
     "num_classes": 3,
 }
 

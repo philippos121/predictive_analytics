@@ -269,7 +269,7 @@ class DataManager:
 
     def get_statistics(self) -> dict:
         """Compute dataset statistics."""
-        cases = self.load_dataset()
+        cases, _ = self.load_dataset_safe()
         if not cases:
             return {"total_cases": 0}
 

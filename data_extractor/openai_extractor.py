@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+import httpx
 import openai
 from tenacity import (
     retry,
@@ -689,7 +690,16 @@ class AsyncBatchExtractor:
         self.api_key = api_key
         self.max_concurrent = max_concurrent
         self.progress_callback = progress_callback or (lambda done, total, msg: None)
-        self.async_client = openai.AsyncOpenAI(api_key=api_key)
+        self.async_client = openai.AsyncOpenAI(
+            api_key=api_key,
+            http_client=httpx.AsyncClient(
+                limits=httpx.Limits(
+                    max_connections=max_concurrent + 50,
+                    max_keepalive_connections=max_concurrent,
+                ),
+                timeout=httpx.Timeout(120.0, connect=30.0),
+            ),
+        )
         # Synchronous extractor for validation/normalization helpers
         self._sync = OpenAIExtractor(api_key=api_key)
 

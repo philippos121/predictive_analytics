@@ -13,7 +13,9 @@ Usage:
 
 import asyncio
 import os
+import platform
 import sys
+import time
 from pathlib import Path
 
 # Ensure project root is on path
@@ -41,7 +43,8 @@ def main():
     if not api_key:
         print("\nFehler: OPENAI_API_KEY Umgebungsvariable nicht gesetzt.")
         print("Setzen Sie die Variable:")
-        print("   export OPENAI_API_KEY='sk-...'")
+        print("  PowerShell: $env:OPENAI_API_KEY = 'sk-...'")
+        print("  Bash/Linux: export OPENAI_API_KEY='sk-...'")
         sys.exit(1)
 
     print(f"\nDataset: {dataset_path}")
@@ -50,8 +53,11 @@ def main():
 
     from data_extractor.openai_extractor import AsyncBatchExtractor
 
+    t0 = time.time()
+
     def progress(done, total, msg):
-        print(f"  {msg}")
+        elapsed = time.time() - t0
+        print(f"  [{elapsed:6.1f}s] {msg}")
 
     extractor = AsyncBatchExtractor(
         api_key=api_key,
@@ -59,12 +65,18 @@ def main():
         progress_callback=progress,
     )
 
+    # Windows needs SelectorEventLoop for proper async HTTP concurrency
+    if platform.system() == "Windows":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
     n_success, n_errors = asyncio.run(
         extractor.extract_dataset(dataset_path, save_every=100)
     )
 
+    elapsed = time.time() - t0
     print(f"\n{'=' * 60}")
     print(f"  Ergebnis: {n_success} erfolgreich, {n_errors} Fehler")
+    print(f"  Dauer: {elapsed:.1f}s ({n_success / max(elapsed, 1):.1f} Fälle/s)")
     print(f"{'=' * 60}")
 
     sys.exit(0 if n_errors == 0 else 1)

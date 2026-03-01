@@ -47,6 +47,35 @@ class DataManager:
         with open(self.dataset_path, "r", encoding="utf-8") as f:
             return json.load(f)
 
+    def load_dataset_safe(self) -> tuple[list[dict], int]:
+        """
+        Load cases tolerating a truncated file (e.g. extraction still running).
+        Walks backwards from the truncation point to find the last complete record.
+        Returns (cases, recovered_count) — the original file is never modified.
+        """
+        if not self.dataset_path.exists():
+            return [], 0
+        raw = self.dataset_path.read_text(encoding="utf-8")
+        try:
+            return json.loads(raw), 0
+        except json.JSONDecodeError:
+            pass
+
+        # File is mid-write: find last '\n  }' that closes a top-level object
+        marker = "\n  }"
+        pos = len(raw)
+        while pos > 0:
+            idx = raw.rfind(marker, 0, pos)
+            if idx == -1:
+                break
+            candidate = raw[: idx + len(marker)] + "\n]"
+            try:
+                cases = json.loads(candidate)
+                return cases, len(cases)
+            except json.JSONDecodeError:
+                pos = idx
+        return [], 0
+
     def save_dataset(self, cases: list[dict]) -> None:
         """Save all cases to JSON dataset file."""
         with open(self.dataset_path, "w", encoding="utf-8") as f:
@@ -262,8 +291,11 @@ class DataManager:
         """
         Prepare dataset and embeddings for model training.
         Returns only labeled cases with complete embeddings.
+        Uses the safe loader so training works even while extraction is still running.
         """
-        cases = self.load_dataset()
+        cases, recovered = self.load_dataset_safe()
+        if recovered:
+            print(f"[DataManager] Datei noch nicht fertig — {recovered} vollständige Fälle geladen.")
         all_embeddings = self.load_all_embeddings()
 
         training_cases = []

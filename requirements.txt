@@ -17,6 +17,7 @@ scipy>=1.13.0
 # Data Management
 pandas>=2.2.0
 jsonschema>=4.22.0
+h5py>=3.11.0
 
 # UI / Visualization
 streamlit>=1.36.0

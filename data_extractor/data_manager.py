@@ -1,9 +1,7 @@
 """
-Data Manager: Handles storage and retrieval of extracted case data.
+Data Manager: Handles storage and retrieval of extracted case data and embeddings.
 
-v2.0 — All data stored in JSON (no HDF5 embeddings).
-Each case record contains structured metadata, text sections, and a detailed
-structured legal analysis that serves as the primary training signal.
+v3.0 — Hybrid: JSON for structured data + HDF5 for embedding vectors.
 """
 
 import json
@@ -11,20 +9,32 @@ import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
+import h5py
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import DATASET_FILE
+from config import (
+    DATASET_FILE,
+    EMBEDDING_DIM,
+    EMBEDDING_SECTIONS,
+    EMBEDDINGS_FILE,
+)
 
 
 class DataManager:
-    """Manages the case dataset (JSON only, no embeddings)."""
+    """Manages the case dataset (JSON + HDF5 embeddings)."""
 
-    def __init__(self, dataset_path: Path = DATASET_FILE):
+    def __init__(
+        self,
+        dataset_path: Path = DATASET_FILE,
+        embeddings_path: Path = EMBEDDINGS_FILE,
+    ):
         self.dataset_path = Path(dataset_path)
+        self.embeddings_path = Path(embeddings_path)
         self.dataset_path.parent.mkdir(parents=True, exist_ok=True)
+        self.embeddings_path.parent.mkdir(parents=True, exist_ok=True)
 
     # ─── Dataset Operations ─────────────────────────────────────────────────────
 
@@ -47,14 +57,14 @@ class DataManager:
         structured: dict,
         sections: dict[str, str],
         legal_analysis: dict,
+        embeddings: Optional[dict[str, list[float]]] = None,
     ) -> dict:
         """
         Add a new case to the dataset.
-        Returns the complete case record.
+        If embeddings are provided, they are saved to HDF5.
         """
         cases = self.load_dataset()
 
-        # Check for duplicate filename
         existing_filenames = {c["filename"] for c in cases}
         if filename in existing_filenames:
             raise ValueError(f"Fall '{filename}' wurde bereits verarbeitet.")
@@ -66,10 +76,14 @@ class DataManager:
             "structured": structured,
             "sections": {k: v for k, v in sections.items()},
             "legal_analysis": legal_analysis,
+            "has_embeddings": embeddings is not None,
         }
 
         cases.append(case_record)
         self.save_dataset(cases)
+
+        if embeddings:
+            self._save_embeddings(case_id, embeddings)
 
         return case_record
 
@@ -78,15 +92,12 @@ class DataManager:
         cases = self.load_dataset()
         for i, case in enumerate(cases):
             if case["case_id"] == case_id:
-                # Deep update structured data
                 if "structured" in updates:
                     cases[i]["structured"].update(updates["structured"])
-                # Deep update legal_analysis
                 if "legal_analysis" in updates:
                     if "legal_analysis" not in cases[i]:
                         cases[i]["legal_analysis"] = {}
                     cases[i]["legal_analysis"].update(updates["legal_analysis"])
-                # Update other fields
                 for k, v in updates.items():
                     if k not in ("structured", "legal_analysis"):
                         cases[i][k] = v
@@ -96,12 +107,13 @@ class DataManager:
         return False
 
     def delete_case(self, case_id: str) -> bool:
-        """Remove a case from dataset."""
+        """Remove a case from dataset and its embeddings."""
         cases = self.load_dataset()
         original_len = len(cases)
         cases = [c for c in cases if c["case_id"] != case_id]
         if len(cases) < original_len:
             self.save_dataset(cases)
+            self._delete_embeddings(case_id)
             return True
         return False
 
@@ -119,6 +131,55 @@ class DataManager:
                 return case
         return None
 
+    # ─── Embedding Operations ────────────────────────────────────────────────────
+
+    def _save_embeddings(self, case_id: str, embeddings: dict[str, list[float]]) -> None:
+        """Save embedding vectors to HDF5 file."""
+        with h5py.File(self.embeddings_path, "a") as f:
+            if case_id in f:
+                del f[case_id]
+            grp = f.create_group(case_id)
+            for section, vec in embeddings.items():
+                vec_array = np.array(vec, dtype=np.float32)
+                if len(vec_array) != EMBEDDING_DIM:
+                    padded = np.zeros(EMBEDDING_DIM, dtype=np.float32)
+                    padded[: min(len(vec_array), EMBEDDING_DIM)] = vec_array[:EMBEDDING_DIM]
+                    vec_array = padded
+                grp.create_dataset(section, data=vec_array)
+
+    def _delete_embeddings(self, case_id: str) -> None:
+        """Remove embeddings for a case from HDF5."""
+        if not self.embeddings_path.exists():
+            return
+        with h5py.File(self.embeddings_path, "a") as f:
+            if case_id in f:
+                del f[case_id]
+
+    def load_embeddings(self, case_id: str) -> Optional[dict[str, np.ndarray]]:
+        """Load embeddings for a single case."""
+        if not self.embeddings_path.exists():
+            return None
+        with h5py.File(self.embeddings_path, "r") as f:
+            if case_id not in f:
+                return None
+            return {
+                section: np.array(f[case_id][section])
+                for section in f[case_id].keys()
+            }
+
+    def load_all_embeddings(self) -> dict[str, dict[str, np.ndarray]]:
+        """Load all embeddings from HDF5. Returns {case_id: {section: array}}."""
+        if not self.embeddings_path.exists():
+            return {}
+        result = {}
+        with h5py.File(self.embeddings_path, "r") as f:
+            for case_id in f.keys():
+                result[case_id] = {
+                    section: np.array(f[case_id][section])
+                    for section in f[case_id].keys()
+                }
+        return result
+
     # ─── Dataset Analysis ────────────────────────────────────────────────────────
 
     def get_statistics(self) -> dict:
@@ -131,6 +192,7 @@ class DataManager:
         outcomes = [c["structured"]["outcome"] for c in labeled]
 
         has_analysis = sum(1 for c in cases if c.get("legal_analysis"))
+        has_embeddings = sum(1 for c in cases if c.get("has_embeddings"))
 
         streitwerte = [
             c["structured"].get("streitwert_eur")
@@ -148,6 +210,7 @@ class DataManager:
             "labeled_cases": len(labeled),
             "unlabeled_cases": len(cases) - len(labeled),
             "cases_with_legal_analysis": has_analysis,
+            "cases_with_embeddings": has_embeddings,
             "outcome_distribution": {
                 "unterliegen": outcomes.count(0),
                 "teilweise": outcomes.count(1),
@@ -162,24 +225,27 @@ class DataManager:
             },
         }
 
-    def export_for_training(self) -> list[dict]:
+    def export_for_training(self) -> tuple[list[dict], dict]:
         """
         Prepare dataset for model training.
-        Returns only labeled cases with legal analysis data.
+        Returns (cases, embeddings_dict) — only labeled cases with embeddings.
         """
         cases = self.load_dataset()
+        all_embeddings = self.load_all_embeddings()
 
         training_cases = []
+        training_embeddings = {}
+
         for case in cases:
-            # Must have outcome label
+            cid = case["case_id"]
             if case["structured"].get("outcome") is None:
                 continue
-            # Must have legal analysis
-            if not case.get("legal_analysis"):
+            if cid not in all_embeddings:
                 continue
             training_cases.append(case)
+            training_embeddings[cid] = all_embeddings[cid]
 
-        return training_cases
+        return training_cases, training_embeddings
 
     def generate_case_id(self) -> str:
         """Generate a unique case ID."""

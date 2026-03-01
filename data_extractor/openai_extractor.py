@@ -2,10 +2,10 @@
 OpenAI Extractor: Uses GPT-5-nano to extract structured legal data
 and a detailed legal analysis from Austrian civil judgment text.
 
-v2.0 — No embeddings.  Instead of text-embedding-3-large vectors the extractor
-now produces a fine-grained structured legal analysis (fall_metadaten,
-klaegervorbringen, beklagtenvorbringen categories) that serves as the primary
-training signal for the prediction model.
+v3.0 — Hybrid: structured legal analysis + text-embedding-3-large embeddings.
+Extraction pipeline:
+1. GPT-5-nano: structured metadata, text sections, legal analysis
+2. text-embedding-3-large: kläger/beklagten vorbringen embeddings
 
 Includes AsyncBatchExtractor for parallel extraction (100 concurrent API calls).
 """
@@ -253,7 +253,7 @@ FESTSTELLUNGEN:
 class OpenAIExtractor:
     """
     Handles all OpenAI API interactions for legal text extraction.
-    Uses GPT-5-nano for structured data extraction — no embeddings.
+    Uses GPT-5-nano for structured data extraction + text-embedding-3-large for embeddings.
     """
 
     def __init__(self, api_key: str, progress_callback: Optional[Callable] = None):
@@ -454,12 +454,35 @@ class OpenAIExtractor:
 
         return self._validate_legal_analysis(data)
 
+    def embed_sections(self, sections: dict[str, str]) -> dict[str, list[float]]:
+        """
+        Generate text-embedding-3-large vectors for klaegervorbringen
+        and beklagtenvorbringen sections.
+
+        Returns: {section_key: embedding_vector}
+        """
+        from config import EMBEDDING_DIM, EMBEDDING_SECTIONS, OPENAI_EMBEDDING_MODEL
+
+        embeddings = {}
+        for section_key in EMBEDDING_SECTIONS:
+            text = sections.get(section_key, "")
+            if not text or not text.strip():
+                continue
+            resp = self.client.embeddings.create(
+                model=OPENAI_EMBEDDING_MODEL,
+                input=text.strip(),
+                dimensions=EMBEDDING_DIM,
+            )
+            embeddings[section_key] = resp.data[0].embedding
+        return embeddings
+
     def process_judgment(self, text: str) -> dict[str, Any]:
         """
         Full extraction pipeline for a single judgment:
         1. Extract structured metadata (outcome, streitwert, etc.)
         2. Extract text sections (anonymized)
-        3. Extract structured legal analysis (replaces embeddings)
+        3. Extract structured legal analysis
+        4. Generate text embeddings for kläger/beklagten vorbringen
 
         Returns complete case dict ready for dataset storage.
         """
@@ -467,20 +490,25 @@ class OpenAIExtractor:
 
         # Step 1: Structured data
         structured = self.extract_structured_data(text)
-        self._log("Strukturierte Daten extrahiert.", 0.35)
+        self._log("Strukturierte Daten extrahiert.", 0.3)
 
         # Step 2: Text sections
         sections = self.extract_text_sections(text)
-        self._log("Textabschnitte extrahiert.", 0.55)
+        self._log("Textabschnitte extrahiert.", 0.5)
 
-        # Step 3: Legal analysis (replaces embeddings)
+        # Step 3: Legal analysis
         legal_analysis = self.extract_legal_analysis(text)
-        self._log("Legal-Analyse extrahiert.", 0.95)
+        self._log("Legal-Analyse extrahiert.", 0.7)
+
+        # Step 4: Embeddings for kläger/beklagten vorbringen
+        embeddings = self.embed_sections(sections)
+        self._log("Embeddings berechnet.", 0.95)
 
         return {
             "structured": structured,
             "sections": sections,
             "legal_analysis": legal_analysis,
+            "embeddings": embeddings,
         }
 
     def _validate_and_normalize(self, data: dict) -> dict:

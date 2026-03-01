@@ -460,6 +460,7 @@ with tab_extract:
                                     structured=extracted["structured"],
                                     sections=extracted["sections"],
                                     legal_analysis=extracted["legal_analysis"],
+                                    embeddings=extracted.get("embeddings"),
                                 )
 
                                 progress_holder.empty()

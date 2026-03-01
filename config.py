@@ -1,9 +1,9 @@
 """
 Shared configuration for the Predictive Litigation Analytics system.
 
-v2.0 — Structured Data Training (no embeddings).
-Uses GPT-5-nano to extract a detailed legal analysis schema from each ruling,
-then trains a neural network purely on structured features.
+v3.0 — Hybrid: Text Embeddings + Structured Data.
+Uses pre-computed text-embedding-3-large vectors (kläger/beklagten vorbringen)
+combined with structured metadata features for classification.
 """
 
 import os
@@ -13,12 +13,14 @@ from pathlib import Path
 BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / "data"
 EXTRACTED_DIR = DATA_DIR / "extracted"
+EMBEDDINGS_DIR = DATA_DIR / "embeddings"
 MODELS_DIR = DATA_DIR / "models"
 
-for _d in [DATA_DIR, EXTRACTED_DIR, MODELS_DIR]:
+for _d in [DATA_DIR, EXTRACTED_DIR, EMBEDDINGS_DIR, MODELS_DIR]:
     _d.mkdir(parents=True, exist_ok=True)
 
 DATASET_FILE = EXTRACTED_DIR / "cases_dataset.json"
+EMBEDDINGS_FILE = EMBEDDINGS_DIR / "embeddings.h5"
 MODEL_CHECKPOINT = MODELS_DIR / "litigation_model.pt"
 SCALER_FILE = MODELS_DIR / "feature_scaler.pkl"
 ENCODER_FILE = MODELS_DIR / "label_encoders.pkl"
@@ -31,9 +33,10 @@ KNN_FILE = MODELS_DIR / "litigation_knn.pkl"
 KNN_THRESHOLD = 50
 
 # ─── OpenAI Configuration ───────────────────────────────────────────────────────
-# Using gpt-5-nano for structured data extraction from rulings.
-# No embeddings — the model trains on structured legal analysis features only.
 OPENAI_EXTRACTION_MODEL = "gpt-5-nano-2025-08-07"
+OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
+EMBEDDING_DIM = 3072  # Full dimension of text-embedding-3-large
+EMBEDDING_DIM_USED = 1024  # Truncated dimension for training (first N dims)
 
 # API rate limiting
 OPENAI_REQUEST_DELAY_SEC = 0.5       # Delay between API requests
@@ -109,10 +112,22 @@ DEFENSE_LABELS = {
     "andere": "Sonstige Einwendungen",
 }
 
+# ─── Embedding Sections ──────────────────────────────────────────────────────────
+# Text sections whose embeddings are used for training.
+# Only kläger + beklagten vorbringen — these contain the actual legal arguments.
+EMBEDDING_SECTIONS = [
+    "klaegervorbringen",
+    "beklagtenvorbringen",
+]
+
+EMBEDDING_SECTION_LABELS = {
+    "klaegervorbringen": "Kläger-Vorbringen",
+    "beklagtenvorbringen": "Beklagten-Vorbringen",
+}
+
 # ─── Structured Legal Analysis Schema ────────────────────────────────────────────
 # Detailed extraction schema for Austrian civil proceedings.
-# Extracted by GPT from each ruling and used as primary training features.
-# Replaces the previous embedding-based approach.
+# Extracted by GPT from each ruling. Used as auxiliary structured features.
 
 RECHTSGEBIET_CATEGORIES = [
     "Schuldrecht_Vertrag",
@@ -202,30 +217,35 @@ SECTION_LABELS = {
 }
 
 # ─── Neural Network Configuration ───────────────────────────────────────────────
-# Rein strukturierte Daten — kein Embedding-Encoder.
-# Durch die detaillierte Legal-Analysis (~77 Features) ist das Netz kompakter
-# und schneller zu trainieren als die bisherige Embedding-Architektur.
+# Hybrid: per-section embedding encoders + structured feature encoder → fusion → 3-class.
+#
+# Each embedding section (1024-dim) is compressed to 64-dim, then all are
+# concatenated with encoded structured features and fused.
 #
 # Parameteranzahl ca.:
-#   StructuredEncoder (features→64→32):  ~4 K
-#   Fusion (32→16→3):                    ~0.6 K
-#   Gesamt: ~5 K
+#   2 × EmbeddingEncoder (1024→128→64): ~140 K
+#   StructuredEncoder (struct→32):       ~1 K
+#   Fusion (160→64→3):                   ~12 K
+#   Gesamt: ~155 K
 NN_CONFIG = {
-    "hidden_dims": [64, 32],         # Smaller encoder — reduce overfitting on sparse features
-    "fusion_dims": [16],             # Compact fusion layer
-    "dropout": 0.4,                  # Higher dropout for noisy GPT-extracted boolean features
+    "embedding_hidden_dim": 128,     # Intermediate dim per embedding encoder
+    "embedding_output_dim": 64,      # Output dim per embedding encoder
+    "structured_hidden_dim": 32,     # Structured feature encoder hidden dim
+    "fusion_dims": [64],             # Fusion layer dimensions (compact)
+    "dropout_embedding": 0.3,        # Dropout for embedding encoders
+    "dropout_fusion": 0.4,           # Dropout for fusion layers
     "num_classes": 3,                # win / partial / loss
 }
 
 # ─── Training Configuration ─────────────────────────────────────────────────────
 TRAINING_CONFIG = {
-    "epochs": 300,
+    "epochs": 200,
     "batch_size": 64,
     "learning_rate": 3e-4,
     "weight_decay": 1e-2,
-    "lr_scheduler_patience": 20,
+    "lr_scheduler_patience": 15,
     "lr_scheduler_factor": 0.5,
-    "early_stopping_patience": 40,
+    "early_stopping_patience": 30,
     "val_split": 0.2,
     "random_seed": 42,
     "gradient_clip": 1.0,
@@ -234,5 +254,5 @@ TRAINING_CONFIG = {
 # ─── UI Configuration ───────────────────────────────────────────────────────────
 APP_TITLE_EXTRACTOR = "Litigation Data Extractor"
 APP_TITLE_MODEL = "Predictive Litigation Analytics"
-APP_VERSION = "2.0.0"
+APP_VERSION = "3.0.0"
 APP_AUTHOR = "Predictive Litigation Analytics System"

@@ -2,7 +2,7 @@
 Model Trainer: Training loop, validation, early stopping, and checkpointing
 for the LitigationClassifier neural network.
 
-v2.0 — Structured data only, no embeddings.
+v3.0 — Hybrid: Text Embeddings + Structured Data.
 """
 
 import json
@@ -33,7 +33,7 @@ from model.feature_engineer import (
     prepare_dataset,
 )
 from model.knn_predictor import KNNLitigationPredictor
-from model.neural_net import FocalLoss, LitigationClassifier
+from model.neural_net import LitigationClassifier
 
 
 class EarlyStopping:
@@ -90,10 +90,15 @@ class LitigationTrainer:
         """Send progress update to callback."""
         self.progress_callback(**kwargs)
 
-    def prepare_data(self, cases: list[dict]) -> tuple:
+    def prepare_data(
+        self,
+        cases: list[dict],
+        embeddings_dict: dict,
+    ) -> tuple:
         """Prepare datasets for training."""
         train_ds, val_ds, full_ds = prepare_dataset(
             cases,
+            embeddings_dict,
             self.feature_engineer,
             val_split=self.config["val_split"],
             random_seed=self.config["random_seed"],
@@ -102,9 +107,9 @@ class LitigationTrainer:
         feature_dim = self.feature_engineer.feature_dim
         return train_ds, val_ds, full_ds, feature_dim
 
-    def build_model(self, input_dim: int) -> LitigationClassifier:
+    def build_model(self, structured_dim: int) -> LitigationClassifier:
         """Initialize the neural network."""
-        model = LitigationClassifier(input_dim=input_dim)
+        model = LitigationClassifier(structured_dim=structured_dim)
         model = model.to(self.device)
         self.model = model
         return model
@@ -112,13 +117,15 @@ class LitigationTrainer:
     def train(
         self,
         cases: list[dict],
+        embeddings_dict: dict,
         save_checkpoint: bool = True,
     ) -> dict:
         """
         Full training pipeline.
 
         Args:
-            cases: List of case dicts (labeled, with legal_analysis)
+            cases: List of case dicts (labeled)
+            embeddings_dict: {case_id: {section: np.ndarray}}
             save_checkpoint: Whether to save best model
 
         Returns:
@@ -135,7 +142,7 @@ class LitigationTrainer:
         if n_labeled < KNN_THRESHOLD:
             return self._train_knn(cases, save_checkpoint)
 
-        # Neural network path — clear any previous kNN
+        # Neural network path
         self.knn = None
 
         start_time = time.time()
@@ -143,26 +150,24 @@ class LitigationTrainer:
         # ── Data Preparation ─────────────────────────────────────────────────────
         self._log(phase="preparing", message="Daten werden vorbereitet...")
 
-        train_ds, val_ds, full_ds, feature_dim = self.prepare_data(cases)
+        train_ds, val_ds, full_ds, feature_dim = self.prepare_data(
+            cases, embeddings_dict
+        )
 
-        # Report feature selection results
-        raw_dim = self.feature_engineer._compute_feature_dim()
-        mask = self.feature_engineer._feature_mask
-        n_dropped = int((~mask).sum()) if mask is not None else 0
+        n_with_emb = len(full_ds)
 
         self._log(
             phase="prepared",
             train_size=len(train_ds),
             val_size=len(val_ds),
             feature_dim=feature_dim,
-            features_dropped=n_dropped,
-            features_raw=raw_dim,
+            n_with_embeddings=n_with_emb,
         )
 
         if len(train_ds) < 2:
             raise ValueError(
                 f"Zu wenige Trainingsdaten ({len(train_ds)} Fälle). "
-                "Mindestens 5 Fälle mit Outcome-Label erforderlich."
+                "Mindestens 5 Fälle mit Outcome-Label und Embeddings erforderlich."
             )
 
         batch_size = min(self.config["batch_size"], len(train_ds))
@@ -191,9 +196,7 @@ class LitigationTrainer:
             device=str(self.device),
         )
 
-        # Class-weighted CrossEntropy (plain CE is more stable than FocalLoss
-        # when features are noisy — FocalLoss suppresses the training signal
-        # on "hard" examples, which are most examples with sparse features)
+        # Class-weighted CrossEntropy
         class_weights = compute_class_weights(cases).to(self.device)
         criterion = nn.CrossEntropyLoss(weight=class_weights)
 
@@ -216,7 +219,6 @@ class LitigationTrainer:
         )
 
         best_val_acc = 0.0
-        best_val_loss = float("inf")
         best_state_dict = None
 
         # ── Training Loop ────────────────────────────────────────────────────────
@@ -225,16 +227,16 @@ class LitigationTrainer:
             model.train()
             train_loss, train_correct, train_total = 0.0, 0, 0
 
-            for struct_batch, label_batch in train_loader:
+            for emb_batch, struct_batch, label_batch in train_loader:
+                emb_batch = [e.to(self.device) for e in emb_batch]
                 struct_batch = struct_batch.to(self.device)
                 label_batch = label_batch.to(self.device)
 
                 optimizer.zero_grad()
-                logits, _ = model(struct_batch)
+                logits, _ = model(emb_batch, struct_batch)
                 loss = criterion(logits, label_batch)
                 loss.backward()
 
-                # Gradient clipping
                 nn.utils.clip_grad_norm_(
                     model.parameters(), self.config["gradient_clip"]
                 )
@@ -327,7 +329,6 @@ class LitigationTrainer:
             message=f"kNN-Modus (< {KNN_THRESHOLD} Fälle) — Daten werden vorbereitet...",
         )
 
-        # Fit scaler on structured features (needed for inference path)
         self.feature_engineer.fit_transform(cases)
         feature_dim = self.feature_engineer.feature_dim
 
@@ -399,11 +400,12 @@ class LitigationTrainer:
         pred_counts = [0, 0, 0]
 
         with torch.no_grad():
-            for struct_batch, label_batch in loader:
+            for emb_batch, struct_batch, label_batch in loader:
+                emb_batch = [e.to(self.device) for e in emb_batch]
                 struct_batch = struct_batch.to(self.device)
                 label_batch = label_batch.to(self.device)
 
-                logits, _ = model(struct_batch)
+                logits, _ = model(emb_batch, struct_batch)
                 loss = criterion(logits, label_batch)
 
                 total_loss += loss.item() * len(label_batch)
@@ -425,7 +427,7 @@ class LitigationTrainer:
             return result_loss, result_acc, dist
         return result_loss, result_acc
 
-    def evaluate_full(self, cases: list[dict]) -> dict:
+    def evaluate_full(self, cases: list[dict], embeddings_dict: dict = None) -> dict:
         """
         Full evaluation on the complete dataset.
         Returns per-class metrics.
@@ -436,8 +438,11 @@ class LitigationTrainer:
         if self.model is None:
             raise RuntimeError("Model not trained/loaded.")
 
+        if embeddings_dict is None:
+            raise ValueError("embeddings_dict required for neural net evaluation.")
+
         structured_features = self.feature_engineer.transform(cases)
-        full_ds = LitigationDataset(cases, structured_features)
+        full_ds = LitigationDataset(cases, embeddings_dict, structured_features)
         loader = DataLoader(
             full_ds, batch_size=32, shuffle=False, collate_fn=collate_fn
         )
@@ -446,10 +451,11 @@ class LitigationTrainer:
         all_preds, all_labels, all_probs = [], [], []
 
         with torch.no_grad():
-            for struct_batch, label_batch in loader:
+            for emb_batch, struct_batch, label_batch in loader:
+                emb_batch = [e.to(self.device) for e in emb_batch]
                 struct_batch = struct_batch.to(self.device)
 
-                logits, probs = self.model(struct_batch)
+                logits, probs = self.model(emb_batch, struct_batch)
                 preds = logits.argmax(dim=-1)
 
                 all_preds.extend(preds.cpu().numpy())
@@ -460,7 +466,6 @@ class LitigationTrainer:
         all_labels = np.array(all_labels)
         all_probs = np.array(all_probs)
 
-        # Per-class metrics
         per_class = {}
         for cls in range(3):
             tp = ((all_preds == cls) & (all_labels == cls)).sum()
@@ -535,7 +540,7 @@ class LitigationTrainer:
                     "model_type": "neural_net",
                     "model_state_dict": self.model.state_dict(),
                     "model_config": self.model.config,
-                    "input_dim": self.model.input_dim,
+                    "structured_dim": self.model.structured_dim,
                     "history": self.history,
                 },
                 MODEL_CHECKPOINT,
@@ -569,15 +574,14 @@ class LitigationTrainer:
             return True
 
         # ── Neural network checkpoint ─────────────────────────────────────────
-        input_dim = checkpoint.get("input_dim")
-        if input_dim is None:
-            # Incompatible old checkpoint
+        structured_dim = checkpoint.get("structured_dim")
+        if structured_dim is None:
             self.model = None
             MODEL_CHECKPOINT.unlink(missing_ok=True)
             return False
 
         self.model = LitigationClassifier(
-            input_dim=input_dim,
+            structured_dim=structured_dim,
             config=checkpoint.get("model_config", {}),
         )
 

@@ -1,7 +1,10 @@
 """
 Predictor: Apply the trained model to new cases for outcome prediction.
 
-v2.0 — Structured data only, no embeddings.
+v3.0 — Hybrid: Text Embeddings + Structured Data.
+
+For prediction on new cases, embeddings must be computed via OpenAI API
+or provided directly. Structured features are encoded from case metadata.
 
 Implements the expected value calculation combining:
 1. ML model probability (from trained LitigationClassifier)
@@ -18,8 +21,11 @@ import torch
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
     DEFENSE_TYPES,
+    EMBEDDING_DIM_USED,
+    EMBEDDING_SECTIONS,
     OUTCOME_LABELS,
 )
+from model.feature_engineer import prepare_embeddings_for_case
 from model.ratg_calculator import RATGKostenrechnung
 from model.trainer import LitigationTrainer
 
@@ -57,14 +63,18 @@ class LitigationPredictor:
             return cls(trainer)
         return None
 
-    def predict(self, case_dict: dict) -> dict:
+    def predict(
+        self,
+        case_dict: dict,
+        embeddings: Optional[dict[str, np.ndarray]] = None,
+    ) -> dict:
         """
         Predict outcome probabilities for a new case.
 
-        Routes to kNN or neural network depending on which model is loaded.
-
         Args:
-            case_dict: Case dict with 'structured' and 'legal_analysis' keys
+            case_dict: Case dict with 'structured' key
+            embeddings: {section: np.ndarray} — pre-computed embedding vectors.
+                        Required for neural net. If None, falls back to kNN.
 
         Returns:
             dict with probabilities, predicted class, confidence
@@ -78,14 +88,29 @@ class LitigationPredictor:
 
         self.model.eval()
 
-        # Encode structured features (includes legal_analysis)
+        # Encode structured features
         structured = self.feature_engineer.encode_single_transform(case_dict)
         structured_tensor = torch.tensor(
             structured, dtype=torch.float32
         ).unsqueeze(0).to(self.device)
 
+        # Prepare embeddings
+        if embeddings is None:
+            # No embeddings available — use zero vectors (reduced accuracy)
+            emb_list = [
+                np.zeros(EMBEDDING_DIM_USED, dtype=np.float32)
+                for _ in EMBEDDING_SECTIONS
+            ]
+        else:
+            emb_list = prepare_embeddings_for_case(embeddings)
+
+        emb_tensors = [
+            torch.tensor(e, dtype=torch.float32).unsqueeze(0).to(self.device)
+            for e in emb_list
+        ]
+
         with torch.no_grad():
-            logits, probs = self.model(structured_tensor)
+            logits, probs = self.model(emb_tensors, structured_tensor)
 
         probs_np = probs.cpu().numpy()[0]
         predicted_class = int(probs_np.argmax())
@@ -113,19 +138,14 @@ class LitigationPredictor:
         cost_estimate_eur: Optional[float] = None,
         ratg_kosten: Optional[RATGKostenrechnung] = None,
     ) -> dict:
-        """
-        Compute the combined expected value of a case.
-        """
-        # Normalize weights
+        """Compute the combined expected value of a case."""
         w_total = w_ml + w_jurist
         w_ml_norm = w_ml / w_total
         w_jurist_norm = w_jurist / w_total
 
-        # ML probabilities
         p_win_ml = ml_result["p_win"]
         p_partial_ml = ml_result["p_partial"]
 
-        # Mixture
         p_ml_win_adj     = juristic_estimate * p_win_ml
         p_ml_partial_adj = juristic_estimate * p_partial_ml
 
@@ -148,7 +168,6 @@ class LitigationPredictor:
             "recommendation": self._get_recommendation(ev_probability),
         }
 
-        # Monetary expected value
         if streitwert_eur is not None and streitwert_eur > 0:
             sw = streitwert_eur
 
@@ -203,66 +222,3 @@ class LitigationPredictor:
             return "VORSICHT — Unterdurchschnittliche Erfolgschancen"
         else:
             return "NICHT EMPFOHLEN — Geringe Erfolgschancen"
-
-    def get_feature_importance(self) -> Optional[dict]:
-        """
-        Approximate feature importance via weight analysis.
-        Only available if neural network is trained (not for kNN mode).
-        """
-        if self.trainer.knn is not None:
-            return None
-
-        if self.model is None:
-            return None
-
-        # Feature names
-        from config import CLAIM_TYPES, LEGAL_ANALYSIS_BOOL_FIELDS, LEGAL_ANALYSIS_LIST_FIELDS, RECHTSGEBIET_CATEGORIES
-
-        feature_names = []
-
-        # A) Original structured features
-        feature_names.append("log_streitwert")
-        for ct in CLAIM_TYPES:
-            feature_names.append(f"claim_{ct}")
-        feature_names.append("claim_Andere")
-        for d in DEFENSE_TYPES:
-            feature_names.append(f"defense_{d}")
-        feature_names.extend([
-            "klaeger_evidence_count",
-            "beklagter_evidence_count",
-            "legal_basis_count",
-        ])
-        for inst in ["BG", "LG", "OLG", "OGH"]:
-            feature_names.append(f"instanz_{inst}")
-        feature_names.append("sachverstaendiger")
-
-        # B) Legal analysis features
-        for rg in RECHTSGEBIET_CATEGORIES:
-            feature_names.append(f"rechtsgebiet_{rg}")
-        for section_key, fields in LEGAL_ANALYSIS_BOOL_FIELDS.items():
-            for field in fields:
-                feature_names.append(f"la_{section_key}_{field}")
-        for section_key, fields in LEGAL_ANALYSIS_LIST_FIELDS.items():
-            for field in fields:
-                feature_names.append(f"la_{section_key}_{field}_count")
-
-        # Apply same feature mask used during training
-        mask = self.trainer.feature_engineer._feature_mask
-        if mask is not None:
-            feature_names = [n for n, keep in zip(feature_names, mask) if keep]
-
-        # Get encoder first-layer weights as proxy for importance
-        weights = self.model.encoder[0].weight.data.abs()
-        importance = weights.mean(dim=0).cpu().numpy()
-
-        if len(importance) != len(feature_names):
-            return None
-
-        return {
-            name: float(imp)
-            for name, imp in sorted(
-                zip(feature_names, importance),
-                key=lambda x: x[1],
-                reverse=True,
-            )
-        }

@@ -362,7 +362,7 @@ tab_train, tab_eval, tab_predict, tab_ev = st.tabs([
 with tab_train:
     st.markdown('<div class="section-title">Modell trainieren</div>', unsafe_allow_html=True)
 
-    cases = dm.export_for_training()
+    cases, embeddings_dict = dm.export_for_training()
     n_cases = len(cases)
 
     col_s1, col_s2, col_s3, col_s4 = st.columns(4)
@@ -402,19 +402,21 @@ with tab_train:
             neuronale Netz um.
             """)
         else:
+            from config import EMBEDDING_DIM_USED, NN_CONFIG as _nn_cfg
             st.markdown(f"""
-            **Aktiver Modus: Neuronales Netz** (≥ {KNN_THRESHOLD} Fälle)
-            - **Structured Encoder**: Linear({fe.feature_dim} → 128) + LayerNorm + GELU + Dropout (2 Schichten)
-            - **Fusion Network**: Linear(128 → 64) + LayerNorm + GELU + Dropout → Linear(64 → 3)
-            - **Loss**: Focal Loss (γ=2) mit Klassen-Gewichtung
+            **Aktiver Modus: Hybrid-Neuronales Netz** (≥ {KNN_THRESHOLD} Fälle)
+            - **Embedding-Input**: 2 × {EMBEDDING_DIM_USED}-dim (Kläger + Beklagter Vorbringen)
+            - **Embedding-Encoder**: {EMBEDDING_DIM_USED} → {_nn_cfg['embedding_hidden_dim']} → {_nn_cfg['embedding_output_dim']} (pro Sektion)
+            - **Structured Encoder**: {fe.feature_dim} → {_nn_cfg['structured_hidden_dim']} (Metadaten)
+            - **Fusion**: Concat → {_nn_cfg['fusion_dims']} → 3 Klassen
+            - **Loss**: CrossEntropyLoss mit Klassen-Gewichtung
             - **Optimizer**: AdamW mit ReduceLROnPlateau
-            - **Regularisierung**: LayerNorm, Dropout, Gradient Clipping, Early Stopping
-            - **Parameter gesamt**: ~28 K (kompakt, kein Embedding-Encoder)
+            - **Regularisierung**: LayerNorm, Dropout ({_nn_cfg['dropout_fusion']}), Gradient Clipping, Early Stopping
+            - **Parameter gesamt**: ~155 K
 
-            **Input-Features (~{fe.feature_dim} dim):**
+            **Input:**
+            - Text-Embeddings (text-embedding-3-large, truncated auf {EMBEDDING_DIM_USED} dim)
             - Strukturierte Metadaten (Streitwert, Instanz, Anspruchsart, Einwendungen)
-            - Legal-Analyse (Anspruchsgrundlagen, prozessuale/materielle Einwendungen)
-            - Rechtsgebiet, Verbrauchergeschäft, zitierte Normen
 
             **Output:** 3 Klassen (Unterliegen / Teilweise / Obsiegen)
             """)
@@ -470,14 +472,12 @@ with tab_train:
                 )
 
             elif phase == "prepared":
-                dropped = kwargs.get("features_dropped", 0)
-                raw = kwargs.get("features_raw", kwargs["feature_dim"])
+                n_emb = kwargs.get("n_with_embeddings", "?")
                 msg = (
                     f'[OK]  Train: {kwargs["train_size"]} | Val: {kwargs["val_size"]} | '
-                    f'Features: {kwargs["feature_dim"]}'
+                    f'Structured: {kwargs["feature_dim"]} | '
+                    f'Mit Embeddings: {n_emb}'
                 )
-                if dropped:
-                    msg += f' (dropped {dropped}/{raw} low-variance)'
                 st.session_state.training_log.append(msg)
 
             elif phase == "model_built":
@@ -577,7 +577,7 @@ with tab_train:
         trainer = LitigationTrainer(config=custom_config, progress_callback=progress_cb)
 
         try:
-            history = trainer.train(cases, save_checkpoint=True)
+            history = trainer.train(cases, embeddings_dict, save_checkpoint=True)
 
             st.session_state.trainer = trainer
             st.session_state.predictor = LitigationPredictor(trainer)
@@ -684,8 +684,8 @@ with tab_eval:
         if st.button("Vollständige Evaluation berechnen", type="primary"):
             with st.spinner("Evaluiere Modell auf gesamtem Dataset..."):
                 try:
-                    cases = dm.export_for_training()
-                    eval_result = trainer.evaluate_full(cases)
+                    cases, emb_dict = dm.export_for_training()
+                    eval_result = trainer.evaluate_full(cases, emb_dict)
                     st.session_state.eval_result = eval_result
                 except Exception as e:
                     st.error(f"Fehler bei Evaluation: {e}")
@@ -879,12 +879,38 @@ with tab_predict:
                 },
             }
 
-            # Use empty legal analysis for quick prediction from form
-            from data_extractor.openai_extractor import OpenAIExtractor as _OAI
-            case_dict["legal_analysis"] = _OAI.empty_legal_analysis()
+            with st.spinner("Embeddings berechnen & Vorhersage..."):
+                # Generate embeddings for the text sections via OpenAI
+                pred_embeddings = None
+                if p_klaeger_text.strip() or p_beklagter_text.strip():
+                    try:
+                        import openai
+                        from config import EMBEDDING_DIM, OPENAI_EMBEDDING_MODEL
+                        client = openai.OpenAI(api_key=st.session_state.openai_api_key)
+                        pred_embeddings = {}
+                        for section_key, text in [
+                            ("klaegervorbringen", p_klaeger_text),
+                            ("beklagtenvorbringen", p_beklagter_text),
+                        ]:
+                            if text.strip():
+                                resp = client.embeddings.create(
+                                    model=OPENAI_EMBEDDING_MODEL,
+                                    input=text.strip(),
+                                    dimensions=EMBEDDING_DIM,
+                                )
+                                pred_embeddings[section_key] = np.array(
+                                    resp.data[0].embedding, dtype=np.float32
+                                )
+                    except Exception as e:
+                        st.warning(
+                            f"Embedding-Berechnung fehlgeschlagen: {e}. "
+                            "Vorhersage basiert nur auf strukturierten Daten."
+                        )
+                        pred_embeddings = None
 
-            with st.spinner("Berechne Vorhersage..."):
-                result = st.session_state.predictor.predict(case_dict)
+                result = st.session_state.predictor.predict(
+                    case_dict, embeddings=pred_embeddings
+                )
                 st.session_state.prediction_result = result
 
         # ── Display Results ──────────────────────────────────────────────────────

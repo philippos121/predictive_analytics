@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
     APP_VERSION,
     CLAIM_TYPES,
+    DEFAULT_ML_WEIGHT_NO_CALIBRATION,
     DEFENSE_LABELS,
     DEFENSE_TYPES,
     KNN_THRESHOLD,
@@ -1013,12 +1014,43 @@ with tab_ev:
     zur Berechnung des Gesamterwartungswerts:
 
     > **E[outcome] = w_ML × P_ML(Obsiegen) + w_Jur × P_Juristisch(Obsiegen)**
+
+    Die ML-Gewichtung wird automatisch aus der Kalibrierungsqualität des Modells
+    (Brier Skill Score) abgeleitet.
     """)
 
     if st.session_state.prediction_result is None:
         st.info("Bitte zuerst eine Vorhersage im Tab 'Vorhersage' berechnen.")
     else:
         ml_result = st.session_state.prediction_result
+
+        # ── Calibration-aware default weight ──────────────────────────────
+        predictor = st.session_state.get("predictor")
+        if predictor is not None:
+            _rec_w = predictor.get_recommended_ml_weight()
+            _calib = predictor.get_calibration_summary()
+        else:
+            _rec_w = DEFAULT_ML_WEIGHT_NO_CALIBRATION
+            _calib = {}
+
+        _bss = _calib.get("brier_skill_score")
+        _ml_signal = _calib.get("ml_adds_signal", False)
+
+        # Round to nearest 0.05 for slider step
+        _default_w_ml = round(_rec_w * 20) / 20
+
+        if _bss is not None:
+            if _ml_signal:
+                st.success(
+                    f"**Modell-Kalibrierung:** Brier Skill Score = {_bss:.3f} — "
+                    f"Modell liefert Signal. Empfohlene ML-Gewichtung: **{_default_w_ml:.0%}**"
+                )
+            else:
+                st.warning(
+                    f"**Modell-Kalibrierung:** Brier Skill Score = {_bss:.3f} — "
+                    "Modell ist nicht besser als die Basisrate. "
+                    "Nur juristische Einschätzung verwenden (ML-Gewicht = 0)."
+                )
 
         col_ev1, col_ev2 = st.columns([2, 1])
 
@@ -1036,8 +1068,13 @@ with tab_ev:
                 )
                 w_ml = st.slider(
                     "Gewichtung ML-Modell",
-                    0.0, 1.0, 0.5, 0.1,
-                    help="Höher = mehr Vertrauen in das ML-Modell",
+                    0.0, 1.0, _default_w_ml, 0.05,
+                    help=(
+                        f"Aus Kalibrierung abgeleitet (BSS={_bss:.3f}). "
+                        "Höher = mehr Vertrauen in das ML-Modell."
+                        if _bss is not None
+                        else "Höher = mehr Vertrauen in das ML-Modell"
+                    ),
                 )
                 w_jurist = 1.0 - w_ml
 

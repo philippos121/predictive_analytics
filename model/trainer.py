@@ -313,6 +313,24 @@ class LitigationTrainer:
         self.history["training_time_sec"] = time.time() - start_time
         self.history["epochs_trained"] = epoch
 
+        # ── Post-training calibration ─────────────────────────────────────────
+        self._log(phase="calibrating", message="Kalibrierungs-Diagnostik wird berechnet...")
+        try:
+            calib = self.compute_calibration_diagnostics(cases, embeddings_dict)
+            self.history["calibration"] = {
+                "brier_skill_score": calib.get("brier_skill_score", 0.0),
+                "brier_score_model": calib.get("brier_score_model"),
+                "brier_score_baseline": calib.get("brier_score_baseline"),
+                "accuracy_above_baseline": calib.get("accuracy_above_baseline", 0.0),
+                "ml_adds_signal": calib.get("ml_adds_signal", False),
+                "majority_class_accuracy": calib.get("majority_class_accuracy", 0.5),
+            }
+        except Exception:
+            self.history["calibration"] = {
+                "brier_skill_score": 0.0,
+                "ml_adds_signal": False,
+            }
+
         if save_checkpoint:
             self.save_checkpoint()
 
@@ -321,6 +339,7 @@ class LitigationTrainer:
             best_val_acc=best_val_acc,
             epochs_trained=epoch,
             training_time=self.history["training_time_sec"],
+            brier_skill_score=self.history["calibration"]["brier_skill_score"],
         )
 
         return self.history

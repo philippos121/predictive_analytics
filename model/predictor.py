@@ -20,12 +20,14 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
+    DEFAULT_ML_WEIGHT_NO_CALIBRATION,
     DEFENSE_TYPES,
     EMBEDDING_DIM_USED,
     EMBEDDING_SECTIONS,
     NUM_CLASSES,
     OUTCOME_LABELS,
     PCA_DIM,
+    recommended_ml_weight,
 )
 from model.feature_engineer import prepare_embeddings_for_case
 from model.ratg_calculator import RATGKostenrechnung
@@ -64,6 +66,22 @@ class LitigationPredictor:
         if trainer.load_checkpoint():
             return cls(trainer)
         return None
+
+    def get_recommended_ml_weight(self) -> float:
+        """Return the recommended ML mixing weight based on stored calibration.
+
+        If Brier Skill Score was computed during training, derives weight from
+        it.  Otherwise falls back to a conservative default.
+        """
+        calib = self.trainer.history.get("calibration", {})
+        bss = calib.get("brier_skill_score")
+        if bss is not None:
+            return recommended_ml_weight(bss)
+        return DEFAULT_ML_WEIGHT_NO_CALIBRATION
+
+    def get_calibration_summary(self) -> dict:
+        """Return calibration info stored from training, if available."""
+        return self.trainer.history.get("calibration", {})
 
     def predict(
         self,

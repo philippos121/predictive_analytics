@@ -286,6 +286,32 @@ TRAINING_CONFIG = {
 }
 
 # ─── UI Configuration ───────────────────────────────────────────────────────────
+# ─── Calibration-Aware ML Weighting ──────────────────────────────────────────
+# Derives how much weight the ML model should get in the expected-value
+# mixture, based on its Brier Skill Score (BSS).
+#
+# BSS <= 0    → model adds no signal → w_ml = 0 (jurist only)
+# BSS  0..0.25 → modest signal      → w_ml ramps linearly 0 → 0.5
+# BSS >= 0.25  → strong signal      → w_ml capped at 0.5
+#
+# The jurist always gets at least 50 % weight — the ML nudges, never overrides.
+
+DEFAULT_ML_WEIGHT_NO_CALIBRATION = 0.25  # Fallback when no BSS is available
+
+
+def recommended_ml_weight(brier_skill_score: float) -> float:
+    """Derive ML mixing weight from Brier Skill Score.
+
+    Returns a value in [0.0, 0.5].  A 63 % accuracy model with BSS ~ 0.10
+    gets w_ml ~ 0.20: enough to nudge the expected-value estimate, not enough
+    to dominate it.
+    """
+    if brier_skill_score <= 0.0:
+        return 0.0
+    # Linear ramp: BSS 0 → 0 weight, BSS 0.25 → 0.5 weight
+    return min(0.5, brier_skill_score * 2.0)
+
+
 APP_TITLE_EXTRACTOR = "Litigation Data Extractor"
 APP_TITLE_MODEL = "Predictive Litigation Analytics"
 APP_VERSION = "3.0.0"

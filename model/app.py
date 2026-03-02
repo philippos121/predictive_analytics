@@ -412,11 +412,11 @@ with tab_train:
             - **Loss**: CrossEntropyLoss mit Klassen-Gewichtung
             - **Optimizer**: AdamW mit ReduceLROnPlateau
             - **Regularisierung**: PCA, LayerNorm, Dropout ({_nn_cfg['dropout_fusion']}), Gradient Clipping, Early Stopping
-            - **Parameter gesamt**: ~62 K
+            - **Parameter gesamt**: ~36 K
 
             **Input:**
             - Text-Embeddings (text-embedding-3-large, {EMBEDDING_DIM_USED}-dim → PCA {PCA_DIM}-dim)
-            - Strukturierte Metadaten (Streitwert, Instanz, Anspruchsart, Einwendungen)
+            - Strukturierte Metadaten + Legal-Analyse (~{fe.feature_dim} Features)
 
             **Output:** 3 Klassen (Unterliegen / Teilweise / Obsiegen)
             """)

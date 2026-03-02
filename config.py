@@ -225,12 +225,12 @@ SECTION_LABELS = {
 # is encoded to 64-dim and concatenated with structured features for fusion.
 #
 # Parameteranzahl ca.:
-#   2 × EmbeddingEncoder (128→128→64):   ~50 K
-#   StructuredEncoder (struct→32):        ~1 K
+#   2 × EmbeddingEncoder (128→64→64):    ~22 K
+#   StructuredEncoder (struct→32):        ~3 K
 #   Fusion (160→64→3):                    ~11 K
-#   Gesamt: ~62 K
+#   Gesamt: ~36 K
 NN_CONFIG = {
-    "embedding_hidden_dim": 128,     # Intermediate dim per embedding encoder
+    "embedding_hidden_dim": 64,      # Intermediate dim per embedding encoder
     "embedding_output_dim": 64,      # Output dim per embedding encoder
     "structured_hidden_dim": 32,     # Structured feature encoder hidden dim
     "fusion_dims": [64],             # Fusion layer dimensions (compact)

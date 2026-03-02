@@ -27,6 +27,8 @@ from config import (
     DEFENSE_TYPES,
     EMBEDDING_DIM_USED,
     EMBEDDING_SECTIONS,
+    LEGAL_ANALYSIS_BOOL_FIELDS,
+    LEGAL_ANALYSIS_LIST_FIELDS,
     PCA_DIM,
     PCA_FILE,
     SCALER_FILE,
@@ -47,6 +49,8 @@ class FeatureEngineer:
     - legal_basis_count                       [1]
     - court_level one-hot (BG/LG/OLG/OGH)    [4]
     - sachverstaendiger                       [1]
+    - legal_analysis bool fields              [~42]
+    - legal_analysis list counts              [2]
     """
 
     INSTANZ_CLASSES = ["BG", "LG", "OLG", "OGH"]
@@ -72,6 +76,11 @@ class FeatureEngineer:
         n += 1                          # anspruchsgruende count
         n += len(self.INSTANZ_CLASSES)  # court level one-hot
         n += 1                          # sachverstaendiger
+        # Legal analysis features
+        for fields in LEGAL_ANALYSIS_BOOL_FIELDS.values():
+            n += len(fields)
+        for fields in LEGAL_ANALYSIS_LIST_FIELDS.values():
+            n += len(fields)
         return n
 
     def encode_case(self, case: dict) -> np.ndarray:
@@ -116,6 +125,19 @@ class FeatureEngineer:
 
         # 7. Expert witness
         features.append(1.0 if s.get("sachverstaendiger_bestellt") else 0.0)
+
+        # 8. Legal analysis boolean fields (~42 features)
+        la = case.get("legal_analysis", {})
+        for section, fields in LEGAL_ANALYSIS_BOOL_FIELDS.items():
+            section_data = la.get(section, {})
+            for field in fields:
+                features.append(1.0 if section_data.get(field) else 0.0)
+
+        # 9. Legal analysis list counts (zitierte Normen)
+        for section, fields in LEGAL_ANALYSIS_LIST_FIELDS.items():
+            section_data = la.get(section, {})
+            for field in fields:
+                features.append(float(len(section_data.get(field, []))))
 
         return np.array(features, dtype=np.float32)
 

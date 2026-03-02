@@ -19,7 +19,7 @@ from typing import Optional
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import OUTCOME_LABELS
+from config import NUM_CLASSES, OUTCOME_LABELS, map_outcome_label
 
 
 class KNNLitigationPredictor:
@@ -37,7 +37,7 @@ class KNNLitigationPredictor:
         self.k = k
         self.train_features: Optional[np.ndarray] = None  # (N, feature_dim)
         self.train_labels: Optional[np.ndarray] = None      # (N,)
-        self.n_classes = 3
+        self.n_classes = NUM_CLASSES
         self.is_fitted = False
         self._feature_engineer = None
 
@@ -66,7 +66,7 @@ class KNNLitigationPredictor:
         # Encode features — use fitted feature selection + scaler
         features = feature_engineer.transform(labeled)
 
-        labels = [int(c["structured"]["outcome"]) for c in labeled]
+        labels = [map_outcome_label(int(c["structured"]["outcome"])) for c in labeled]
 
         self.train_features = self._normalize(features)
         self.train_labels = np.array(labels, dtype=np.int64)
@@ -110,17 +110,25 @@ class KNNLitigationPredictor:
         probs = self.predict_proba_from_features(features)
         predicted_class = int(probs.argmax())
 
-        return {
+        result = {
             "predicted_outcome": predicted_class,
             "predicted_label": OUTCOME_LABELS[predicted_class],
             "probabilities": {
-                OUTCOME_LABELS[i]: float(probs[i]) for i in range(3)
+                OUTCOME_LABELS[i]: float(probs[i]) for i in range(NUM_CLASSES)
             },
             "confidence": float(probs.max()),
-            "p_win": float(probs[2]),
-            "p_partial": float(probs[1]),
-            "p_loss": float(probs[0]),
         }
+
+        if NUM_CLASSES == 2:
+            result["p_win"] = float(probs[1])
+            result["p_partial"] = 0.0
+            result["p_loss"] = float(probs[0])
+        else:
+            result["p_win"] = float(probs[2])
+            result["p_partial"] = float(probs[1])
+            result["p_loss"] = float(probs[0])
+
+        return result
 
     # ── Persistence ──────────────────────────────────────────────────────────
 

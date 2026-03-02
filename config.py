@@ -33,6 +33,14 @@ KNN_FILE = MODELS_DIR / "litigation_knn.pkl"
 # At or above                       → LitigationClassifier neural network
 KNN_THRESHOLD = 50
 
+# ─── Classification Mode ────────────────────────────────────────────────────────
+# NUM_CLASSES = 2: Binary (Obsiegen vs Nicht-Obsiegen).
+#   Merges "Teilweises Obsiegen" into "Nicht-Obsiegen" (class 0).
+#   Rationale: "Teilweise" outcomes depend on evidence quality and sub-claim
+#   granularity that cannot be predicted from pleadings alone.
+# NUM_CLASSES = 3: Ternary (Obsiegen / Teilweise / Unterliegen) — original mode.
+NUM_CLASSES = 2
+
 # ─── OpenAI Configuration ───────────────────────────────────────────────────────
 OPENAI_EXTRACTION_MODEL = "gpt-5-nano-2025-08-07"
 OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
@@ -46,23 +54,47 @@ OPENAI_MAX_RETRIES = 5
 OPENAI_RETRY_DELAY_SEC = 2.0
 
 # ─── Outcome Labels ─────────────────────────────────────────────────────────────
-OUTCOME_LABELS = {
-    0: "Unterliegen",
-    1: "Teilweises Obsiegen/Unterliegen",
-    2: "Obsiegen",
-}
+if NUM_CLASSES == 2:
+    OUTCOME_LABELS = {
+        0: "Nicht-Obsiegen",
+        1: "Obsiegen",
+    }
+    OUTCOME_COLORS = {
+        0: "#E74C3C",   # Red
+        1: "#27AE60",   # Green
+    }
+    OUTCOME_ICONS = {
+        0: "❌",
+        1: "✅",
+    }
+else:
+    OUTCOME_LABELS = {
+        0: "Unterliegen",
+        1: "Teilweises Obsiegen/Unterliegen",
+        2: "Obsiegen",
+    }
+    OUTCOME_COLORS = {
+        0: "#E74C3C",   # Red
+        1: "#F39C12",   # Orange
+        2: "#27AE60",   # Green
+    }
+    OUTCOME_ICONS = {
+        0: "❌",
+        1: "⚖️",
+        2: "✅",
+    }
 
-OUTCOME_COLORS = {
-    0: "#E74C3C",   # Red
-    1: "#F39C12",   # Orange
-    2: "#27AE60",   # Green
-}
 
-OUTCOME_ICONS = {
-    0: "❌",
-    1: "⚖️",
-    2: "✅",
-}
+def map_outcome_label(raw_outcome: int) -> int:
+    """Map 3-class raw outcome label to the configured NUM_CLASSES scheme.
+
+    Raw labels from extraction: 0=loss, 1=partial, 2=win.
+    When NUM_CLASSES == 2: 0,1 → 0 (Nicht-Obsiegen), 2 → 1 (Obsiegen).
+    When NUM_CLASSES == 3: identity mapping.
+    """
+    if NUM_CLASSES == 2:
+        return 1 if raw_outcome == 2 else 0
+    return raw_outcome
 
 # ─── Legal Claim Types (Anspruchsarten) ─────────────────────────────────────────
 CLAIM_TYPES = [
@@ -236,7 +268,7 @@ NN_CONFIG = {
     "fusion_dims": [64],             # Fusion layer dimensions (compact)
     "dropout_embedding": 0.5,        # Dropout for embedding encoders
     "dropout_fusion": 0.5,           # Dropout for fusion layers
-    "num_classes": 3,                # win / partial / loss
+    "num_classes": NUM_CLASSES,
 }
 
 # ─── Training Configuration ─────────────────────────────────────────────────────

@@ -29,10 +29,12 @@ from config import (
     EMBEDDING_SECTIONS,
     LEGAL_ANALYSIS_BOOL_FIELDS,
     LEGAL_ANALYSIS_LIST_FIELDS,
+    NUM_CLASSES,
     PCA_DIM,
     PCA_FILE,
     SCALER_FILE,
     TRAINING_CONFIG,
+    map_outcome_label,
 )
 
 
@@ -350,8 +352,9 @@ class LitigationDataset(torch.utils.data.Dataset):
             self.structured_features[case_idx], dtype=torch.float32
         )
 
-        # Label
-        label = int(case["structured"]["outcome"])
+        # Label (mapped to NUM_CLASSES scheme)
+        raw_label = int(case["structured"]["outcome"])
+        label = map_outcome_label(raw_label)
 
         return embeddings, structured, label
 
@@ -380,16 +383,18 @@ def prepare_dataset(
     if len(full_dataset) == 0:
         raise ValueError("No valid labeled cases with embeddings found.")
 
-    # Stratified split
+    # Stratified split (uses mapped labels for NUM_CLASSES scheme)
     indices = list(range(len(full_dataset)))
     labels = [
-        full_dataset.cases[full_dataset.valid_indices[i]]["structured"]["outcome"]
+        map_outcome_label(int(
+            full_dataset.cases[full_dataset.valid_indices[i]]["structured"]["outcome"]
+        ))
         for i in indices
     ]
 
-    label_to_indices: dict[int, list[int]] = {0: [], 1: [], 2: []}
+    label_to_indices: dict[int, list[int]] = {c: [] for c in range(NUM_CLASSES)}
     for i, lbl in zip(indices, labels):
-        label_to_indices[int(lbl)].append(i)
+        label_to_indices[lbl].append(i)
 
     train_indices, val_indices = [], []
     for lbl, idxs in label_to_indices.items():
@@ -434,16 +439,17 @@ def collate_fn(batch: list) -> tuple:
 
 def compute_class_weights(cases: list[dict]) -> torch.Tensor:
     """Compute inverse-frequency class weights for imbalanced datasets."""
-    labels = [
-        c["structured"].get("outcome")
+    mapped_labels = [
+        map_outcome_label(int(c["structured"]["outcome"]))
         for c in cases
         if c["structured"].get("outcome") is not None
     ]
-    counts = [labels.count(i) for i in range(3)]
+    n_cls = NUM_CLASSES
+    counts = [mapped_labels.count(i) for i in range(n_cls)]
     total = sum(counts)
 
     if total == 0 or any(c == 0 for c in counts):
-        return torch.ones(3)
+        return torch.ones(n_cls)
 
-    weights = [total / (3 * c) for c in counts]
+    weights = [total / (n_cls * c) for c in counts]
     return torch.tensor(weights, dtype=torch.float32)

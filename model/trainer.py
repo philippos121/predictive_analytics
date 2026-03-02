@@ -21,6 +21,7 @@ from config import (
     KNN_FILE,
     KNN_THRESHOLD,
     MODEL_CHECKPOINT,
+    NUM_CLASSES,
     PCA_FILE,
     SCALER_FILE,
     TRAINING_CONFIG,
@@ -405,7 +406,7 @@ class LitigationTrainer:
 
         model.eval()
         total_loss, correct, total = 0.0, 0, 0
-        pred_counts = [0, 0, 0]
+        pred_counts = [0] * NUM_CLASSES
 
         with torch.no_grad():
             for emb_batch, struct_batch, label_batch in loader:
@@ -421,7 +422,7 @@ class LitigationTrainer:
                 correct += (preds == label_batch).sum().item()
                 total += len(label_batch)
 
-                for cls in range(3):
+                for cls in range(NUM_CLASSES):
                     pred_counts[cls] += (preds == cls).sum().item()
 
         if total == 0:
@@ -431,7 +432,7 @@ class LitigationTrainer:
         result_acc = correct / total
 
         if return_pred_dist:
-            dist = {cls: pred_counts[cls] / total for cls in range(3)}
+            dist = {cls: pred_counts[cls] / total for cls in range(NUM_CLASSES)}
             return result_loss, result_acc, dist
         return result_loss, result_acc
 
@@ -476,7 +477,7 @@ class LitigationTrainer:
         all_probs = np.array(all_probs)
 
         per_class = {}
-        for cls in range(3):
+        for cls in range(NUM_CLASSES):
             tp = ((all_preds == cls) & (all_labels == cls)).sum()
             fp = ((all_preds == cls) & (all_labels != cls)).sum()
             fn = ((all_preds != cls) & (all_labels == cls)).sum()
@@ -515,7 +516,7 @@ class LitigationTrainer:
         all_probs = np.array(all_probs)
 
         per_class = {}
-        for cls in range(3):
+        for cls in range(NUM_CLASSES):
             tp = int(((all_preds == cls) & (all_labels == cls)).sum())
             fp = int(((all_preds == cls) & (all_labels != cls)).sum())
             fn = int(((all_preds != cls) & (all_labels == cls)).sum())
@@ -616,6 +617,91 @@ class LitigationTrainer:
             self.embedding_pca.load(PCA_FILE)
 
         return True
+
+    def compute_calibration_diagnostics(
+        self,
+        cases: list[dict],
+        embeddings_dict: dict = None,
+    ) -> dict:
+        """Measure whether the ML model adds signal beyond a flat baseline.
+
+        Returns calibration metrics that show if the model's probability
+        estimates are useful.  Key metric: **Brier skill score** — positive
+        means the model is better-calibrated than always predicting the
+        base rate, negative means it's *worse* than guessing the prior.
+
+        Also returns log-loss improvement over the naive baseline.
+        """
+        eval_result = self.evaluate_full(cases, embeddings_dict)
+        if not eval_result.get("probabilities"):
+            return {"error": "Keine Vorhersagen verfügbar."}
+
+        from config import map_outcome_label
+
+        probs = np.array(eval_result["probabilities"])   # (N, NUM_CLASSES)
+        labels = np.array(eval_result["labels"])          # (N,)  already mapped
+        n = len(labels)
+        n_cls = NUM_CLASSES
+
+        # --- Base-rate (naive) baseline: always predict class distribution ---
+        base_rate = np.zeros(n_cls)
+        for c in range(n_cls):
+            base_rate[c] = (labels == c).sum() / n
+
+        # --- Brier score (lower is better) ---
+        #   BS = mean( sum_c (p_c - y_c)^2 )
+        one_hot = np.zeros_like(probs)
+        for i in range(n):
+            one_hot[i, labels[i]] = 1.0
+
+        brier_model = float(np.mean(np.sum((probs - one_hot) ** 2, axis=1)))
+        brier_baseline = float(np.mean(np.sum((base_rate - one_hot) ** 2, axis=1)))
+
+        # Brier skill score: 1 = perfect, 0 = same as baseline, <0 = worse
+        brier_skill = 1.0 - brier_model / brier_baseline if brier_baseline > 0 else 0.0
+
+        # --- Log-loss ---
+        eps = 1e-15
+        probs_clipped = np.clip(probs, eps, 1 - eps)
+        base_clipped = np.clip(base_rate, eps, 1 - eps)
+
+        logloss_model = -float(np.mean(
+            np.log(probs_clipped[np.arange(n), labels])
+        ))
+        logloss_baseline = -float(np.mean(
+            np.log(base_clipped[labels])
+        ))
+        logloss_improvement = logloss_baseline - logloss_model
+
+        # --- Per-class accuracy ---
+        preds = np.array(eval_result["predictions"])
+        per_class_acc = {}
+        for c in range(n_cls):
+            mask = labels == c
+            if mask.sum() > 0:
+                per_class_acc[c] = float((preds[mask] == c).mean())
+
+        return {
+            "n_samples": n,
+            "base_rate": {int(c): float(base_rate[c]) for c in range(n_cls)},
+            "overall_accuracy": eval_result["accuracy"],
+            "majority_class_accuracy": float(base_rate.max()),
+            "accuracy_above_baseline": eval_result["accuracy"] - float(base_rate.max()),
+            "brier_score_model": brier_model,
+            "brier_score_baseline": brier_baseline,
+            "brier_skill_score": brier_skill,
+            "logloss_model": logloss_model,
+            "logloss_baseline": logloss_baseline,
+            "logloss_improvement": logloss_improvement,
+            "per_class_accuracy": per_class_acc,
+            "ml_adds_signal": brier_skill > 0.0,
+            "interpretation": (
+                "ML-Modell liefert bessere Wahrscheinlichkeiten als Zufall"
+                if brier_skill > 0.0
+                else "ML-Modell ist nicht besser als die Basisrate — "
+                     "nur juristische Einschätzung verwenden"
+            ),
+        }
 
     def load_history(self) -> dict:
         """Load training history from file."""

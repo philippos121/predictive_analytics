@@ -23,6 +23,7 @@ from config import (
     DEFENSE_TYPES,
     EMBEDDING_DIM_USED,
     EMBEDDING_SECTIONS,
+    NUM_CLASSES,
     OUTCOME_LABELS,
     PCA_DIM,
 )
@@ -123,17 +124,25 @@ class LitigationPredictor:
         predicted_class = int(probs_np.argmax())
         confidence = float(probs_np.max())
 
-        return {
+        result = {
             "predicted_outcome": predicted_class,
             "predicted_label": OUTCOME_LABELS[predicted_class],
             "probabilities": {
-                OUTCOME_LABELS[i]: float(probs_np[i]) for i in range(3)
+                OUTCOME_LABELS[i]: float(probs_np[i]) for i in range(NUM_CLASSES)
             },
             "confidence": confidence,
-            "p_win": float(probs_np[2]),
-            "p_partial": float(probs_np[1]),
-            "p_loss": float(probs_np[0]),
         }
+
+        if NUM_CLASSES == 2:
+            result["p_win"] = float(probs_np[1])
+            result["p_partial"] = 0.0
+            result["p_loss"] = float(probs_np[0])
+        else:
+            result["p_win"] = float(probs_np[2])
+            result["p_partial"] = float(probs_np[1])
+            result["p_loss"] = float(probs_np[0])
+
+        return result
 
     def compute_expected_value(
         self,
@@ -145,13 +154,18 @@ class LitigationPredictor:
         cost_estimate_eur: Optional[float] = None,
         ratg_kosten: Optional[RATGKostenrechnung] = None,
     ) -> dict:
-        """Compute the combined expected value of a case."""
+        """Compute the combined expected value of a case.
+
+        In 2-class mode (NUM_CLASSES == 2), p_partial is always 0 and the
+        formula reduces to a simple weighted mixture of ML p(win) and the
+        juristic estimate.
+        """
         w_total = w_ml + w_jurist
         w_ml_norm = w_ml / w_total
         w_jurist_norm = w_jurist / w_total
 
         p_win_ml = ml_result["p_win"]
-        p_partial_ml = ml_result["p_partial"]
+        p_partial_ml = ml_result.get("p_partial", 0.0)
 
         p_ml_win_adj     = juristic_estimate * p_win_ml
         p_ml_partial_adj = juristic_estimate * p_partial_ml

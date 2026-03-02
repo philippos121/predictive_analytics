@@ -32,6 +32,7 @@ from config import (
     DEFENSE_TYPES,
     KNN_THRESHOLD,
     MODEL_CHECKPOINT,
+    NUM_CLASSES,
     OUTCOME_COLORS,
     OUTCOME_ICONS,
     OUTCOME_LABELS,
@@ -722,11 +723,11 @@ with tab_eval:
             labels = result["labels"]
             preds = result["predictions"]
 
-            cm = np.zeros((3, 3), dtype=int)
+            cm = np.zeros((NUM_CLASSES, NUM_CLASSES), dtype=int)
             for true, pred in zip(labels, preds):
                 cm[int(true)][int(pred)] += 1
 
-            class_names = [OUTCOME_LABELS[i] for i in range(3)]
+            class_names = [OUTCOME_LABELS[i] for i in range(NUM_CLASSES)]
             fig_cm = px.imshow(
                 cm,
                 labels=dict(x="Vorhergesagt", y="Tatsächlich", color="Anzahl"),
@@ -753,8 +754,9 @@ with tab_eval:
                 labels_arr = np.array(labels)
 
                 fig_probs = go.Figure()
-                colors = ["#8b1a1a", "#7d5a00", "#2c6e49"]
-                for cls in range(3):
+                colors = (["#8b1a1a", "#2c6e49"] if NUM_CLASSES == 2
+                          else ["#8b1a1a", "#7d5a00", "#2c6e49"])
+                for cls in range(NUM_CLASSES):
                     mask = labels_arr == cls
                     if mask.sum() > 0:
                         fig_probs.add_trace(go.Box(
@@ -933,11 +935,17 @@ with tab_predict:
 
                 st.markdown("**Wahrscheinlichkeiten:**")
 
-                probs = [
-                    ("Obsiegen",   result["p_win"],     "prob-win"),
-                    ("Teilweise",  result["p_partial"],  "prob-partial"),
-                    ("Unterliegen",result["p_loss"],     "prob-loss"),
-                ]
+                if NUM_CLASSES == 2:
+                    probs = [
+                        ("Obsiegen",       result["p_win"],  "prob-win"),
+                        ("Nicht-Obsiegen", result["p_loss"], "prob-loss"),
+                    ]
+                else:
+                    probs = [
+                        ("Obsiegen",   result["p_win"],     "prob-win"),
+                        ("Teilweise",  result["p_partial"],  "prob-partial"),
+                        ("Unterliegen",result["p_loss"],     "prob-loss"),
+                    ]
 
                 for label, prob, css_class in probs:
                     pct = int(prob * 100)
@@ -1137,7 +1145,10 @@ with tab_ev:
             st.markdown("**Erwartungswert-Ergebnis**")
 
             # ── Probability Summary ──────────────────────────────────────────────
-            col_ev_r1, col_ev_r2, col_ev_r3 = st.columns(3)
+            if NUM_CLASSES == 2:
+                col_ev_r1, col_ev_r3 = st.columns(2)
+            else:
+                col_ev_r1, col_ev_r2, col_ev_r3 = st.columns(3)
 
             with col_ev_r1:
                 p = ev["p_full_success_combined"]
@@ -1145,28 +1156,30 @@ with tab_ev:
                 st.markdown(
                     f'<div class="ev-card {css}">'
                     f'<div class="ev-value" style="color:#2c6e49">{p:.0%}</div>'
-                    f'<div class="ev-label">Vollständiges Obsiegen</div>'
+                    f'<div class="ev-label">Obsiegen</div>'
                     f"</div>",
                     unsafe_allow_html=True,
                 )
 
-            with col_ev_r2:
-                p2 = ev["p_partial_success_combined"]
-                st.markdown(
-                    f'<div class="ev-card neutral">'
-                    f'<div class="ev-value" style="color:#7d5a00">{p2:.0%}</div>'
-                    f'<div class="ev-label">Teilweises Obsiegen</div>'
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
+            if NUM_CLASSES == 3:
+                with col_ev_r2:
+                    p2 = ev["p_partial_success_combined"]
+                    st.markdown(
+                        f'<div class="ev-card neutral">'
+                        f'<div class="ev-value" style="color:#7d5a00">{p2:.0%}</div>'
+                        f'<div class="ev-label">Teilweises Obsiegen</div>'
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
 
             with col_ev_r3:
                 p3 = ev["p_failure_combined"]
                 css3 = "negative" if p3 > 0.5 else "neutral"
+                label3 = "Nicht-Obsiegen" if NUM_CLASSES == 2 else "Unterliegen"
                 st.markdown(
                     f'<div class="ev-card {css3}">'
                     f'<div class="ev-value" style="color:#8b1a1a">{p3:.0%}</div>'
-                    f'<div class="ev-label">Unterliegen</div>'
+                    f'<div class="ev-label">{label3}</div>'
                     f"</div>",
                     unsafe_allow_html=True,
                 )
@@ -1227,7 +1240,10 @@ with tab_ev:
                 p_ul  = ev["p_failure_combined"]
 
                 with st.expander("Kostenszenarien nach RATG/ZPO", expanded=True):
-                    _sc1, _sc2, _sc3 = st.columns(3)
+                    if NUM_CLASSES == 2:
+                        _sc1, _sc3 = st.columns(2)
+                    else:
+                        _sc1, _sc2, _sc3 = st.columns(3)
                     with _sc1:
                         netto_ob = sw_val - rk["kosten_obsiegen"]
                         st.markdown(
@@ -1239,25 +1255,27 @@ with tab_ev:
                             f"</div>",
                             unsafe_allow_html=True,
                         )
-                    with _sc2:
-                        netto_tob = sw_val * 0.5 - rk["kosten_teilobsiegen"]
-                        col = "#2c6e49" if netto_tob >= 0 else "#8b1a1a"
-                        sign = "+" if netto_tob >= 0 else ""
-                        st.markdown(
-                            f'<div class="ev-card neutral" style="text-align:center">'
-                            f'<div style="font-weight:600;color:#7d5a00">Teilerfolg ({p_tob:.0%})</div>'
-                            f'<div style="font-size:0.8rem;color:#555;margin:4px 0">§ 43 ZPO – eigene Anwaltskosten + ½ GGG</div>'
-                            f'<div style="font-family:monospace;font-size:1.1rem;color:{col}">'
-                            f'{sign}EUR {netto_tob:,.0f}</div>'
-                            f'<div style="font-size:0.75rem;color:#888">Kosten: EUR {rk["kosten_teilobsiegen"]:,.0f}</div>'
-                            f"</div>",
-                            unsafe_allow_html=True,
-                        )
+                    if NUM_CLASSES == 3:
+                        with _sc2:
+                            netto_tob = sw_val * 0.5 - rk["kosten_teilobsiegen"]
+                            col = "#2c6e49" if netto_tob >= 0 else "#8b1a1a"
+                            sign = "+" if netto_tob >= 0 else ""
+                            st.markdown(
+                                f'<div class="ev-card neutral" style="text-align:center">'
+                                f'<div style="font-weight:600;color:#7d5a00">Teilerfolg ({p_tob:.0%})</div>'
+                                f'<div style="font-size:0.8rem;color:#555;margin:4px 0">§ 43 ZPO – eigene Anwaltskosten + ½ GGG</div>'
+                                f'<div style="font-family:monospace;font-size:1.1rem;color:{col}">'
+                                f'{sign}EUR {netto_tob:,.0f}</div>'
+                                f'<div style="font-size:0.75rem;color:#888">Kosten: EUR {rk["kosten_teilobsiegen"]:,.0f}</div>'
+                                f"</div>",
+                                unsafe_allow_html=True,
+                            )
                     with _sc3:
                         netto_ul = -rk["kosten_unterliegen"]
+                        label_ul = "Nicht-Obsiegen" if NUM_CLASSES == 2 else "Unterliegen"
                         st.markdown(
                             f'<div class="ev-card negative" style="text-align:center">'
-                            f'<div style="font-weight:600;color:#8b1a1a">Unterliegen ({p_ul:.0%})</div>'
+                            f'<div style="font-weight:600;color:#8b1a1a">{label_ul} ({p_ul:.0%})</div>'
                             f'<div style="font-size:0.8rem;color:#555;margin:4px 0">§ 41 ZPO – eigene + GGG + Gegner-RATG</div>'
                             f'<div style="font-family:monospace;font-size:1.1rem;color:#8b1a1a">'
                             f'EUR {netto_ul:,.0f}</div>'

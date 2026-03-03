@@ -147,18 +147,23 @@ DEFENSE_LABELS = {
 }
 
 # ─── Embedding Sections ──────────────────────────────────────────────────────────
-# Text sections whose embeddings are used for training.
-# Only kläger + beklagten vorbringen — these contain the actual legal arguments.
+# Text sections whose embeddings are computed and used as NN training INPUTS.
+# Only kläger + beklagten vorbringen — available at prediction time.
+#
+# NOTE: erstgericht_begruendung is extracted and stored but NOT used as input.
+# It would be data leakage — at prediction time you don't have the court's
+# reasoning yet. It is available for:
+#   - LLM fine-tuning as a training TARGET (chain-of-thought → outcome)
+#   - Post-hoc analysis / explainability
+#   - Future reward-model training
 EMBEDDING_SECTIONS = [
     "klaegervorbringen",
     "beklagtenvorbringen",
-    "erstgericht_begruendung",
 ]
 
 EMBEDDING_SECTION_LABELS = {
     "klaegervorbringen": "Kläger-Vorbringen",
     "beklagtenvorbringen": "Beklagten-Vorbringen",
-    "erstgericht_begruendung": "Erstgericht-Begründung",
 }
 
 # ─── Structured Legal Analysis Schema ────────────────────────────────────────────
@@ -260,10 +265,10 @@ SECTION_LABELS = {
 # is encoded to 64-dim and concatenated with structured features for fusion.
 #
 # Parameteranzahl ca.:
-#   3 × EmbeddingEncoder (128→64→64):    ~33 K  (kläger + beklagter + erstgericht_begruendung)
+#   2 × EmbeddingEncoder (128→64→64):    ~22 K  (kläger + beklagter)
 #   StructuredEncoder (struct→32):        ~3 K
-#   Fusion (224→64→2):                    ~15 K
-#   Gesamt: ~51 K
+#   Fusion (160→64→2):                    ~11 K
+#   Gesamt: ~36 K
 NN_CONFIG = {
     "embedding_hidden_dim": 64,      # Intermediate dim per embedding encoder
     "embedding_output_dim": 64,      # Output dim per embedding encoder

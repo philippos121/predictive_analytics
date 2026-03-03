@@ -33,7 +33,7 @@ from config import (
     SECTION_LABELS,
 )
 from data_extractor.data_manager import DataManager
-from data_extractor.openai_extractor import OpenAIExtractor
+from data_extractor.openai_extractor import InsufficientDataError, OpenAIExtractor
 from data_extractor.pdf_processor import PDFProcessingError, extract_text_from_pdf
 
 # ─── Page Config ────────────────────────────────────────────────────────────────
@@ -414,7 +414,7 @@ with tab_extract:
                         status_text = st.empty()
                         log_container = st.container()
 
-                        results = {"success": 0, "error": 0, "errors": []}
+                        results = {"success": 0, "error": 0, "skipped": 0, "errors": []}
 
                         def progress_cb(msg, pct):
                             pass  # Will be updated in loop
@@ -475,6 +475,15 @@ with tab_extract:
 
                                 log_container.success(f"OK  {pdf_path.name}  →  Fall-ID: `{case_id}`")
 
+                            except InsufficientDataError as e:
+                                results["skipped"] += 1
+                                st.session_state.process_log.append({
+                                    "file": pdf_path.name,
+                                    "status": "skipped",
+                                    "error": str(e),
+                                })
+                                log_container.warning(f"ÜBERSPRUNGEN  {pdf_path.name}  →  {e}")
+
                             except Exception as e:
                                 results["error"] += 1
                                 error_msg = str(e)
@@ -495,9 +504,10 @@ with tab_extract:
                         progress_bar.empty()
 
                         st.markdown("---")
-                        col_r1, col_r2 = st.columns(2)
+                        col_r1, col_r2, col_r3 = st.columns(3)
                         col_r1.metric("Erfolgreich", results["success"])
-                        col_r2.metric("Fehler", results["error"])
+                        col_r2.metric("Übersprungen", results["skipped"])
+                        col_r3.metric("Fehler", results["error"])
 
                         if results["success"] > 0:
                             st.success(

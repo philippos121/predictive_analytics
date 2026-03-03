@@ -35,6 +35,12 @@ from config import (
 )
 
 
+class InsufficientDataError(Exception):
+    """Raised when an OGH/OLG decision lacks minimum Erstgericht data
+    (Klägervorbringen, Beklagtenvorbringen, or Outcome)."""
+    pass
+
+
 # ─── Extraction Prompt (metadata + outcome) ──────────────────────────────────────
 
 EXTRACTION_SYSTEM_PROMPT = """Du bist ein Experte für österreichisches Zivilrecht.
@@ -48,6 +54,8 @@ Wichtige Regeln:
 - Extrahiere KEINE Namen von Richtern, Parteien oder Anwälten
 - Fokussiere auf anspruchsrelevante, materiell-rechtliche Inhalte
 - Bei fehlenden Informationen: null für Felder, [] für Listen, false für Boolean
+- ERFINDE NICHTS. Wenn eine Information im Text nicht vorkommt, gib null / [] / false zurück.
+  Lieber ein leeres Feld als eine Halluzination.
 """
 
 EXTRACTION_USER_PROMPT = """Du analysierst eine OGH- oder OLG-Entscheidung. Extrahiere die Daten des ERSTGERICHTLICHEN Verfahrens als JSON.
@@ -99,8 +107,8 @@ WICHTIG:
   "zugesprochener_betrag_eur": float oder null (Erstgericht),
   "zugesprochener_anteil_prozent": float zwischen 0 und 100 oder null (Erstgericht),
 
-  "erstgericht_tragende_argumente": ["Liste der Argumente, die das Erstgericht für seine Entscheidung als ausschlaggebend erachtete, z.B. 'Verjährungseinrede durchgedrungen', 'Gewährleistungsanspruch bejaht weil Mangel bewiesen'"],
-  "erstgericht_abgewiesene_argumente": ["Liste der Argumente, die das Erstgericht verworfen hat, z.B. 'Irrtumseinrede abgewiesen mangels Beweis', 'Aufrechnung nicht zugelassen'"],
+  "erstgericht_tragende_argumente": ["NUR wenn im Text die Begründung des Erstgerichts wiedergegeben wird: Welche Argumente waren ausschlaggebend? Leere Liste [] wenn nicht erkennbar. NICHTS ERFINDEN."],
+  "erstgericht_abgewiesene_argumente": ["NUR wenn im Text die Begründung des Erstgerichts wiedergegeben wird: Welche Argumente hat es verworfen? Leere Liste [] wenn nicht erkennbar. NICHTS ERFINDEN."],
 
   "kostenentscheidung": "Kläger" oder "Beklagter" oder "Geteilt" oder null,
 
@@ -119,17 +127,24 @@ URTEILSTEXT:
 # ─── Text Section Extraction Prompt ─────────────────────────────────────────────
 
 SECTION_EXTRACTION_PROMPT = """Du analysierst eine OGH- oder OLG-Entscheidung. Extrahiere die folgenden Textabschnitte.
-Gib das Ergebnis als JSON zurück. Wenn ein Abschnitt nicht vorhanden ist, gib einen leeren String zurück.
-Entferne alle Namen von Personen (Richter, Parteien, Anwälte) - ersetze sie mit [KLÄGER], [BEKLAGTER], [RICHTER], [ANWALT].
+Gib das Ergebnis als JSON zurück.
 
-WICHTIG: Die Abschnitte beziehen sich auf das ERSTGERICHTLICHE Verfahren, wie es in der OGH/OLG-Entscheidung wiedergegeben wird.
+KRITISCH — NICHTS ERFINDEN:
+- Wenn ein Abschnitt im Text NICHT VORKOMMT, gib einen LEEREN STRING "" zurück.
+- Extrahiere NUR Text, der tatsächlich in der Entscheidung steht.
+- Fasse NICHT zusammen, paraphrasiere NICHT, erfinde NICHTS.
+- Gib den Originaltext wieder (nur anonymisiert).
+
+Anonymisierung: Ersetze alle Personennamen mit [KLÄGER], [BEKLAGTER], [RICHTER], [ANWALT].
+
+Die Abschnitte beziehen sich auf das ERSTGERICHTLICHE Verfahren, wie es in der OGH/OLG-Entscheidung wiedergegeben wird.
 
 {{
-  "klaegervorbringen": "Vollständiger Text des Kläger-Vorbringens vor dem Erstgericht (anonymisiert)",
-  "beklagtenvorbringen": "Vollständiger Text des Beklagten-Vorbringens vor dem Erstgericht (anonymisiert)",
-  "feststellungen": "Vollständiger Text der Sachverhaltsfeststellungen des Erstgerichts (anonymisiert)",
-  "beweisw_rdigung": "Vollständiger Text der Beweiswürdigung des Erstgerichts (anonymisiert)",
-  "erstgericht_begruendung": "Die rechtliche Begründung des Erstgerichts: Warum hat das Erstgericht so entschieden? Welche Argumente waren tragend, welche wurden verworfen? Beginnt typischerweise mit 'Das Erstgericht...' oder 'Rechtlich beurteilte das Erstgericht...' (anonymisiert)"
+  "klaegervorbringen": "Originaltext des Kläger-Vorbringens vor dem Erstgericht, wie in der Entscheidung wiedergegeben. Leerer String wenn nicht vorhanden.",
+  "beklagtenvorbringen": "Originaltext des Beklagten-Vorbringens vor dem Erstgericht, wie in der Entscheidung wiedergegeben. Leerer String wenn nicht vorhanden.",
+  "feststellungen": "Originaltext der Sachverhaltsfeststellungen des Erstgerichts. Leerer String wenn nicht vorhanden.",
+  "beweisw_rdigung": "Originaltext der Beweiswürdigung des Erstgerichts. Leerer String wenn nicht vorhanden.",
+  "erstgericht_begruendung": "Originaltext der rechtlichen Begründung des Erstgerichts (beginnt typischerweise mit 'Das Erstgericht...' oder 'Rechtlich beurteilte das Erstgericht...'). Leerer String wenn nicht vorhanden."
 }}
 
 URTEILSTEXT:
@@ -144,7 +159,7 @@ LEGAL_ANALYSIS_SYSTEM_PROMPT = """You are an expert Austrian legal AI specialize
 
 Your task: From a higher court decision, extract the claims and defenses as they were presented to the ERSTGERICHT (first instance court). Focus on what was argued before the Erstgericht, not on the appellate arguments.
 
-Extract a highly structured JSON representation of the legal arguments, claims, and defenses. Do not hallucinate. If a specific defense, claim, or concept is not explicitly mentioned or heavily implied by the facts, default to `false` or `null`.
+CRITICAL: DO NOT HALLUCINATE. Only set a boolean to `true` if the claim or defense is EXPLICITLY mentioned or clearly described in the text. If you are unsure, default to `false`. An incorrect `true` is far worse than a missed `true`. When in doubt, return `false` / `null` / `[]`.
 
 Return ONLY a valid JSON object matching the following exact schema:
 
@@ -347,7 +362,8 @@ class OpenAIExtractor:
             {
                 "role": "system",
                 "content": "Du extrahierst Textabschnitte aus OGH/OLG-Entscheidungen und gibst JSON zurück."
-                " Fokus auf die Erstgericht-Ebene. Anonymisiere alle Personennamen.",
+                " Fokus auf die Erstgericht-Ebene. Anonymisiere alle Personennamen."
+                " NICHTS ERFINDEN — wenn ein Abschnitt nicht im Text vorkommt, leerer String.",
             },
             {"role": "user", "content": prompt},
         ]
@@ -499,10 +515,12 @@ class OpenAIExtractor:
         Full extraction pipeline for a single judgment:
         1. Extract structured metadata (outcome, streitwert, etc.)
         2. Extract text sections (anonymized)
-        3. Extract structured legal analysis
-        4. Generate text embeddings for kläger/beklagten vorbringen
+        3. Validate: skip if Klägervorbringen or Beklagtenvorbringen missing
+        4. Extract structured legal analysis
+        5. Generate text embeddings
 
         Returns complete case dict ready for dataset storage.
+        Raises InsufficientDataError if minimum required sections are missing.
         """
         self._log("Starte Verarbeitung...", 0.1)
 
@@ -514,11 +532,30 @@ class OpenAIExtractor:
         sections = self.extract_text_sections(text)
         self._log("Textabschnitte extrahiert.", 0.5)
 
-        # Step 3: Legal analysis
+        # Step 3: Validate minimum data — skip cases without Vorbringen
+        kv = sections.get("klaegervorbringen", "").strip()
+        bv = sections.get("beklagtenvorbringen", "").strip()
+        outcome = structured.get("outcome")
+
+        missing = []
+        if not kv or len(kv) < 50:
+            missing.append("Klägervorbringen")
+        if not bv or len(bv) < 50:
+            missing.append("Beklagtenvorbringen")
+        if outcome is None:
+            missing.append("Erstgericht-Outcome")
+
+        if missing:
+            raise InsufficientDataError(
+                f"Entscheidung übersprungen — fehlend: {', '.join(missing)}. "
+                f"OGH/OLG-Text enthält nicht genügend Erstgericht-Daten."
+            )
+
+        # Step 4: Legal analysis
         legal_analysis = self.extract_legal_analysis(text)
         self._log("Legal-Analyse extrahiert.", 0.7)
 
-        # Step 4: Embeddings for kläger/beklagten vorbringen
+        # Step 5: Embeddings
         embeddings = self.embed_sections(sections)
         self._log("Embeddings berechnet.", 0.95)
 

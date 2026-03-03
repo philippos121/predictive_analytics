@@ -1,6 +1,8 @@
 """
 inference.py — Inferenz mit dem feingetunten LoRA-Modell.
 
+Gibt nur Wahrscheinlichkeiten fuer die drei Ausgaenge aus (keine Textgenerierung).
+
 Verwendung:
   # Einzelne Prognose (interaktiv)
   python inference.py --adapter output/legal-lora/final
@@ -29,12 +31,14 @@ from prepare_data import SYSTEM_PROMPT, build_user_prompt
 DEFAULT_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
 DEFAULT_ADAPTER = "output/legal-lora/final"
 
+OUTCOME_LABELS = ["OBSIEGEN", "TEILWEISE", "UNTERLIEGEN"]
+
 
 # ---------------------------------------------------------------------------
 # Modell laden
 # ---------------------------------------------------------------------------
 def load_model(model_name: str, adapter_path: str):
-    """Lädt das Basis-Modell (4-bit) und den LoRA-Adapter."""
+    """Laedt das Basis-Modell (4-bit) und den LoRA-Adapter."""
     logger.info(f"Lade Basis-Modell: {model_name}")
     logger.info(f"Lade LoRA-Adapter: {adapter_path}")
 
@@ -59,29 +63,51 @@ def load_model(model_name: str, adapter_path: str):
     model = PeftModel.from_pretrained(model, adapter_path)
     model.eval()
 
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
     logger.success("Modell geladen und bereit.")
     return model, tokenizer
 
 
 # ---------------------------------------------------------------------------
-# Prognose
+# Token-IDs fuer die drei Outcome-Labels ermitteln
 # ---------------------------------------------------------------------------
-def predict(
+def get_outcome_token_ids(tokenizer) -> dict[str, int]:
+    """
+    Ermittelt die Token-ID fuer jedes Outcome-Label.
+    Nimmt das erste Token der Tokenisierung (z.B. "OBS" fuer "OBSIEGEN").
+    """
+    token_map = {}
+    for label in OUTCOME_LABELS:
+        ids = tokenizer.encode(label, add_special_tokens=False)
+        token_map[label] = ids[0]
+    logger.info(
+        "Outcome-Token-IDs: "
+        + ", ".join(f"{lbl}->{tid}" for lbl, tid in token_map.items())
+    )
+    return token_map
+
+
+# ---------------------------------------------------------------------------
+# Wahrscheinlichkeiten berechnen
+# ---------------------------------------------------------------------------
+def predict_probabilities(
     model,
     tokenizer,
+    outcome_token_ids: dict[str, int],
     klaeger: str,
     beklagter: str,
-    max_new_tokens: int = 256,
-    temperature: float = 0.1,
-) -> str:
-    """Erstellt eine Verfahrensausgang-Prognose."""
-
+) -> dict[str, float]:
+    """
+    Berechnet die Wahrscheinlichkeiten fuer OBSIEGEN / TEILWEISE / UNTERLIEGEN
+    basierend auf den Logits des naechsten Tokens nach dem Prompt.
+    """
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": build_user_prompt(klaeger, beklagter)},
     ]
 
-    # Chat-Template anwenden
     prompt = tokenizer.apply_chat_template(
         messages,
         tokenize=False,
@@ -91,57 +117,56 @@ def predict(
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
     with torch.no_grad():
-        output_ids = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            do_sample=temperature > 0,
-            top_p=0.9,
-            repetition_penalty=1.1,
-            pad_token_id=tokenizer.pad_token_id,
-        )
+        outputs = model(**inputs)
 
-    # Nur die generierten Tokens dekodieren
-    generated = output_ids[0][inputs["input_ids"].shape[1]:]
-    response = tokenizer.decode(generated, skip_special_tokens=True).strip()
-    return response
+    next_token_logits = outputs.logits[0, -1, :]
+
+    target_ids = list(outcome_token_ids.values())
+    target_logits = next_token_logits[target_ids]
+
+    probs = torch.softmax(target_logits.float(), dim=0)
+
+    result = {}
+    for i, label in enumerate(outcome_token_ids.keys()):
+        result[label] = round(probs[i].item() * 100, 2)
+
+    return result
 
 
-def extract_outcome(response: str) -> str:
-    """Extrahiert das Ergebnis (OBSIEGEN/TEILWEISE/UNTERLIEGEN) aus der Antwort."""
-    upper = response.upper()
-    # Check TEILWEISE first — "TEILWEISE" should not match "OBSIEGEN" or "UNTERLIEGEN"
-    if "TEILWEISE" in upper:
-        return "teilweise"
-    if "OBSIEGEN" in upper:
-        return "obsiegen"
-    if "UNTERLIEGEN" in upper:
-        return "unterliegen"
-    return "unklar"
+def format_probabilities(probs: dict[str, float]) -> str:
+    """Formatiert die Wahrscheinlichkeiten als lesbaren String."""
+    best = max(probs, key=probs.get)
+    lines = []
+    for label in OUTCOME_LABELS:
+        p = probs[label]
+        bar = "#" * int(p / 2)
+        marker = " <--" if label == best else ""
+        lines.append(f"  {label:14s} {p:6.2f}%  {bar}{marker}")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
 # Batch-Modus
 # ---------------------------------------------------------------------------
-def batch_predict(model, tokenizer, input_path: Path, output_path: Path):
-    """Batch-Prognose für eine JSON-Datei."""
-    logger.info(f"Lade Fälle aus {input_path}")
+def batch_predict(model, tokenizer, outcome_token_ids, input_path: Path, output_path: Path):
+    """Batch-Prognose — gibt Wahrscheinlichkeiten fuer jeden Fall aus."""
+    logger.info(f"Lade Faelle aus {input_path}")
     with open(input_path, "r", encoding="utf-8") as f:
         cases = json.load(f)
 
     results = []
     for i, case in enumerate(cases):
         logger.info(f"Fall {i+1}/{len(cases)}")
-        response = predict(
-            model, tokenizer,
+        probs = predict_probabilities(
+            model, tokenizer, outcome_token_ids,
             case["klaegervorbringen"],
             case["beklagtenvorbringen"],
         )
-        outcome = extract_outcome(response)
+        best = max(probs, key=probs.get)
         results.append({
             **case,
-            "prognose": outcome,
-            "modell_antwort": response,
+            "probabilities": probs,
+            "predicted": best.lower(),
         })
 
     with open(output_path, "w", encoding="utf-8") as f:
@@ -150,11 +175,22 @@ def batch_predict(model, tokenizer, input_path: Path, output_path: Path):
 
     # Statistik
     if any("outcome" in r for r in results):
+        from collections import Counter
+
         correct = sum(
             1 for r in results
-            if r.get("outcome", "").lower() == r["prognose"]
+            if r.get("outcome", "").lower() == r["predicted"]
         )
-        logger.info(f"Accuracy: {correct}/{len(results)} ({100*correct/len(results):.1f}%)")
+        total = len(results)
+        logger.info(f"Accuracy: {correct}/{total} ({100*correct/total:.1f}%)")
+
+        predicted = Counter(r["predicted"] for r in results)
+        actual = Counter(r.get("outcome", "").lower() for r in results)
+        print(f"\n  Verteilung (tatsaechlich):  {dict(actual)}")
+        print(f"  Verteilung (vorhergesagt): {dict(predicted)}")
+
+        avg_conf = sum(max(r["probabilities"].values()) for r in results) / total
+        print(f"  Durchschnittliche Konfidenz: {avg_conf:.1f}%")
 
     return results
 
@@ -162,16 +198,16 @@ def batch_predict(model, tokenizer, input_path: Path, output_path: Path):
 # ---------------------------------------------------------------------------
 # Interaktiver Modus
 # ---------------------------------------------------------------------------
-def interactive_mode(model, tokenizer):
-    """Interaktiver Prognose-Modus."""
+def interactive_mode(model, tokenizer, outcome_token_ids):
+    """Interaktiver Prognose-Modus — gibt nur Wahrscheinlichkeiten aus."""
     print("\n" + "=" * 60)
-    print("  Verfahrensausgang-Prognose — Interaktiver Modus")
+    print("  Verfahrensausgang-Prognose — Wahrscheinlichkeiten")
     print("  Eingabe 'q' zum Beenden")
     print("=" * 60 + "\n")
 
     while True:
         print("-" * 40)
-        klaeger = input("Klägervorbringen:\n> ").strip()
+        klaeger = input("Klaegervorbringen:\n> ").strip()
         if klaeger.lower() == "q":
             break
 
@@ -179,14 +215,14 @@ def interactive_mode(model, tokenizer):
         if beklagter.lower() == "q":
             break
 
-        print("\nAnalysiere...")
-        response = predict(model, tokenizer, klaeger, beklagter)
-        outcome = extract_outcome(response)
+        print("\nBerechne Wahrscheinlichkeiten...")
+        probs = predict_probabilities(
+            model, tokenizer, outcome_token_ids,
+            klaeger, beklagter,
+        )
 
         print(f"\n{'='*40}")
-        print(f"  PROGNOSE: {outcome.upper()}")
-        print(f"{'='*40}")
-        print(f"  {response}")
+        print(format_probabilities(probs))
         print()
 
 
@@ -195,7 +231,7 @@ def interactive_mode(model, tokenizer):
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="Inferenz mit dem feingetunten Verfahrensausgang-Modell"
+        description="Inferenz mit dem feingetunten Verfahrensausgang-Modell (Wahrscheinlichkeiten)"
     )
     parser.add_argument(
         "--model", "-m",
@@ -213,26 +249,27 @@ def main():
         "--batch", "-b",
         type=Path,
         default=None,
-        help="JSON-Datei für Batch-Prognose (optional)",
+        help="JSON-Datei fuer Batch-Prognose (optional)",
     )
     parser.add_argument(
         "--output", "-o",
         type=Path,
         default=Path("results.json"),
-        help="Ausgabedatei für Batch-Ergebnisse (default: results.json)",
+        help="Ausgabedatei fuer Batch-Ergebnisse (default: results.json)",
     )
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
-        logger.error("CUDA nicht verfügbar!")
+        logger.error("CUDA nicht verfuegbar!")
         raise SystemExit(1)
 
     model, tokenizer = load_model(args.model, args.adapter)
+    outcome_token_ids = get_outcome_token_ids(tokenizer)
 
     if args.batch:
-        batch_predict(model, tokenizer, args.batch, args.output)
+        batch_predict(model, tokenizer, outcome_token_ids, args.batch, args.output)
     else:
-        interactive_mode(model, tokenizer)
+        interactive_mode(model, tokenizer, outcome_token_ids)
 
 
 if __name__ == "__main__":

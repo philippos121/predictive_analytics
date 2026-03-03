@@ -1,11 +1,10 @@
 """
 test_base_model.py — Teste das Basis-Modell (Mistral-7B-Instruct) OHNE Finetuning.
 
-Damit kannst du sehen, wie gut das Modell "out of the box" funktioniert,
-bevor du es mit QLoRA feintunst.
+Gibt nur Wahrscheinlichkeiten für die drei Ausgänge aus (keine Textgenerierung).
 
 Verwendung:
-  # Interaktiver Modus (eigene Fälle eingeben)
+  # Interaktiver Modus
   python test_base_model.py
 
   # Ein synthetisches Beispiel testen
@@ -13,9 +12,6 @@ Verwendung:
 
   # Batch-Test mit Beispieldaten
   python test_base_model.py --batch sample_cases.json --output base_results.json
-
-  # Anderes Modell testen
-  python test_base_model.py --model mistralai/Mistral-7B-Instruct-v0.2
 """
 
 import argparse
@@ -32,6 +28,8 @@ from prepare_data import SYSTEM_PROMPT, build_user_prompt
 # Defaults
 # ---------------------------------------------------------------------------
 DEFAULT_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
+
+OUTCOME_LABELS = ["OBSIEGEN", "TEILWEISE", "UNTERLIEGEN"]
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +57,6 @@ def load_base_model(model_name: str):
     )
     model.eval()
 
-    # Pad-Token setzen (Mistral hat standardmäßig keinen)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -68,18 +65,38 @@ def load_base_model(model_name: str):
 
 
 # ---------------------------------------------------------------------------
-# Prognose
+# Token-IDs für die drei Outcome-Labels ermitteln
 # ---------------------------------------------------------------------------
-def predict(
+def get_outcome_token_ids(tokenizer) -> dict[str, int]:
+    """
+    Ermittelt die Token-ID für jedes Outcome-Label.
+    Nimmt das erste Token der Tokenisierung (z.B. "OBS" für "OBSIEGEN").
+    """
+    token_map = {}
+    for label in OUTCOME_LABELS:
+        ids = tokenizer.encode(label, add_special_tokens=False)
+        token_map[label] = ids[0]  # Erstes Token reicht zur Unterscheidung
+    logger.info(
+        "Outcome-Token-IDs: "
+        + ", ".join(f"{lbl}→{tid}" for lbl, tid in token_map.items())
+    )
+    return token_map
+
+
+# ---------------------------------------------------------------------------
+# Wahrscheinlichkeiten berechnen
+# ---------------------------------------------------------------------------
+def predict_probabilities(
     model,
     tokenizer,
+    outcome_token_ids: dict[str, int],
     klaeger: str,
     beklagter: str,
-    max_new_tokens: int = 256,
-    temperature: float = 0.1,
-) -> str:
-    """Erstellt eine Verfahrensausgang-Prognose mit dem Basis-Modell."""
-
+) -> dict[str, float]:
+    """
+    Berechnet die Wahrscheinlichkeiten für OBSIEGEN / TEILWEISE / UNTERLIEGEN
+    basierend auf den Logits des nächsten Tokens nach dem Prompt.
+    """
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": build_user_prompt(klaeger, beklagter)},
@@ -94,31 +111,35 @@ def predict(
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
     with torch.no_grad():
-        output_ids = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            do_sample=temperature > 0,
-            top_p=0.9,
-            repetition_penalty=1.1,
-            pad_token_id=tokenizer.pad_token_id,
-        )
+        outputs = model(**inputs)
 
-    generated = output_ids[0][inputs["input_ids"].shape[1]:]
-    response = tokenizer.decode(generated, skip_special_tokens=True).strip()
-    return response
+    # Logits des letzten Tokens = Vorhersage für das nächste Token
+    next_token_logits = outputs.logits[0, -1, :]
+
+    # Nur die Logits für unsere drei Outcome-Tokens extrahieren
+    target_ids = list(outcome_token_ids.values())
+    target_logits = next_token_logits[target_ids]
+
+    # Softmax über die drei Kandidaten → Wahrscheinlichkeiten
+    probs = torch.softmax(target_logits.float(), dim=0)
+
+    result = {}
+    for i, label in enumerate(outcome_token_ids.keys()):
+        result[label] = round(probs[i].item() * 100, 2)
+
+    return result
 
 
-def extract_outcome(response: str) -> str:
-    """Extrahiert das Ergebnis aus der Antwort."""
-    upper = response.upper()
-    if "TEILWEISE" in upper:
-        return "teilweise"
-    if "OBSIEGEN" in upper:
-        return "obsiegen"
-    if "UNTERLIEGEN" in upper:
-        return "unterliegen"
-    return "unklar"
+def format_probabilities(probs: dict[str, float]) -> str:
+    """Formatiert die Wahrscheinlichkeiten als lesbaren String."""
+    best = max(probs, key=probs.get)
+    lines = []
+    for label in OUTCOME_LABELS:
+        p = probs[label]
+        bar = "#" * int(p / 2)
+        marker = " <--" if label == best else ""
+        lines.append(f"  {label:14s} {p:6.2f}%  {bar}{marker}")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -144,34 +165,34 @@ DEMO_CASE = {
 }
 
 
-def run_demo(model, tokenizer):
+def run_demo(model, tokenizer, outcome_token_ids):
     """Führt einen Demo-Fall durch."""
     print("\n" + "=" * 60)
-    print("  DEMO — Basis-Modell Test (ohne Finetuning)")
+    print("  DEMO — Basis-Modell Wahrscheinlichkeiten (ohne Finetuning)")
     print("=" * 60)
 
-    print(f"\n📋 Klägervorbringen:\n{DEMO_CASE['klaegervorbringen']}\n")
-    print(f"📋 Beklagtenvorbringen:\n{DEMO_CASE['beklagtenvorbringen']}\n")
-    print("Analysiere mit Basis-Modell...\n")
+    print(f"\nKlaegervorbringen:\n{DEMO_CASE['klaegervorbringen']}\n")
+    print(f"Beklagtenvorbringen:\n{DEMO_CASE['beklagtenvorbringen']}\n")
+    print("Berechne Wahrscheinlichkeiten...\n")
 
-    response = predict(
-        model, tokenizer,
+    probs = predict_probabilities(
+        model, tokenizer, outcome_token_ids,
         DEMO_CASE["klaegervorbringen"],
         DEMO_CASE["beklagtenvorbringen"],
     )
-    outcome = extract_outcome(response)
 
     print(f"{'=' * 60}")
-    print(f"  PROGNOSE: {outcome.upper()}")
+    print(f"  PROGNOSE-WAHRSCHEINLICHKEITEN")
     print(f"{'=' * 60}")
-    print(f"\nModell-Antwort:\n{response}\n")
+    print(format_probabilities(probs))
+    print()
 
 
 # ---------------------------------------------------------------------------
 # Batch-Modus
 # ---------------------------------------------------------------------------
-def batch_predict(model, tokenizer, input_path: Path, output_path: Path):
-    """Batch-Prognose zum Vergleich der Basis-Modell-Performance."""
+def batch_predict(model, tokenizer, outcome_token_ids, input_path: Path, output_path: Path):
+    """Batch-Prognose — gibt Wahrscheinlichkeiten für jeden Fall aus."""
     logger.info(f"Lade Fälle aus {input_path}")
     with open(input_path, "r", encoding="utf-8") as f:
         cases = json.load(f)
@@ -179,16 +200,16 @@ def batch_predict(model, tokenizer, input_path: Path, output_path: Path):
     results = []
     for i, case in enumerate(cases):
         logger.info(f"Fall {i + 1}/{len(cases)}")
-        response = predict(
-            model, tokenizer,
+        probs = predict_probabilities(
+            model, tokenizer, outcome_token_ids,
             case["klaegervorbringen"],
             case["beklagtenvorbringen"],
         )
-        outcome = extract_outcome(response)
+        best = max(probs, key=probs.get)
         results.append({
             **case,
-            "base_prognose": outcome,
-            "base_antwort": response,
+            "probabilities": probs,
+            "predicted": best.lower(),
         })
 
     with open(output_path, "w", encoding="utf-8") as f:
@@ -197,22 +218,23 @@ def batch_predict(model, tokenizer, input_path: Path, output_path: Path):
 
     # Statistik
     if any("outcome" in r for r in results):
+        from collections import Counter
+
         correct = sum(
             1 for r in results
-            if r.get("outcome", "").lower() == r["base_prognose"]
+            if r.get("outcome", "").lower() == r["predicted"]
         )
         total = len(results)
         logger.info(f"Basis-Modell Accuracy: {correct}/{total} ({100 * correct / total:.1f}%)")
 
-        # Detaillierte Aufschlüsselung
-        from collections import Counter
-        predicted = Counter(r["base_prognose"] for r in results)
+        predicted = Counter(r["predicted"] for r in results)
         actual = Counter(r.get("outcome", "").lower() for r in results)
-        print(f"\n  Verteilung (tatsächlich): {dict(actual)}")
+        print(f"\n  Verteilung (tatsaechlich):  {dict(actual)}")
         print(f"  Verteilung (vorhergesagt): {dict(predicted)}")
-        unclear = predicted.get("unklar", 0)
-        if unclear > 0:
-            print(f"  ⚠️  {unclear} Fälle konnten nicht klassifiziert werden ('unklar')")
+
+        # Durchschnittliche Konfidenz
+        avg_conf = sum(max(r["probabilities"].values()) for r in results) / total
+        print(f"  Durchschnittliche Konfidenz: {avg_conf:.1f}%")
 
     return results
 
@@ -220,17 +242,17 @@ def batch_predict(model, tokenizer, input_path: Path, output_path: Path):
 # ---------------------------------------------------------------------------
 # Interaktiver Modus
 # ---------------------------------------------------------------------------
-def interactive_mode(model, tokenizer):
-    """Interaktiver Prognose-Modus mit dem Basis-Modell."""
+def interactive_mode(model, tokenizer, outcome_token_ids):
+    """Interaktiver Modus — gibt nur Wahrscheinlichkeiten aus."""
     print("\n" + "=" * 60)
-    print("  Basis-Modell Test — Interaktiver Modus")
+    print("  Basis-Modell Test — Nur Wahrscheinlichkeiten")
     print("  (ohne Finetuning — zum Vergleich)")
     print("  Eingabe 'q' zum Beenden")
     print("=" * 60 + "\n")
 
     while True:
         print("-" * 40)
-        klaeger = input("Klägervorbringen:\n> ").strip()
+        klaeger = input("Klaegervorbringen:\n> ").strip()
         if klaeger.lower() == "q":
             break
 
@@ -238,14 +260,14 @@ def interactive_mode(model, tokenizer):
         if beklagter.lower() == "q":
             break
 
-        print("\nAnalysiere mit Basis-Modell...")
-        response = predict(model, tokenizer, klaeger, beklagter)
-        outcome = extract_outcome(response)
+        print("\nBerechne Wahrscheinlichkeiten...")
+        probs = predict_probabilities(
+            model, tokenizer, outcome_token_ids,
+            klaeger, beklagter,
+        )
 
         print(f"\n{'=' * 40}")
-        print(f"  PROGNOSE: {outcome.upper()}")
-        print(f"{'=' * 40}")
-        print(f"  {response}")
+        print(format_probabilities(probs))
         print()
 
 
@@ -254,7 +276,7 @@ def interactive_mode(model, tokenizer):
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="Teste das Basis-Modell (Mistral-7B-Instruct) ohne Finetuning"
+        description="Teste das Basis-Modell — gibt nur Wahrscheinlichkeiten aus"
     )
     parser.add_argument(
         "--model", "-m",
@@ -265,34 +287,35 @@ def main():
     parser.add_argument(
         "--demo", "-d",
         action="store_true",
-        help="Führt einen Demo-Fall durch",
+        help="Fuehrt einen Demo-Fall durch",
     )
     parser.add_argument(
         "--batch", "-b",
         type=Path,
         default=None,
-        help="JSON-Datei für Batch-Test (optional)",
+        help="JSON-Datei fuer Batch-Test (optional)",
     )
     parser.add_argument(
         "--output", "-o",
         type=Path,
         default=Path("base_results.json"),
-        help="Ausgabedatei für Batch-Ergebnisse (default: base_results.json)",
+        help="Ausgabedatei fuer Batch-Ergebnisse (default: base_results.json)",
     )
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
-        logger.error("CUDA nicht verfügbar! GPU wird benötigt.")
+        logger.error("CUDA nicht verfuegbar! GPU wird benoetigt.")
         raise SystemExit(1)
 
     model, tokenizer = load_base_model(args.model)
+    outcome_token_ids = get_outcome_token_ids(tokenizer)
 
     if args.demo:
-        run_demo(model, tokenizer)
+        run_demo(model, tokenizer, outcome_token_ids)
     elif args.batch:
-        batch_predict(model, tokenizer, args.batch, args.output)
+        batch_predict(model, tokenizer, outcome_token_ids, args.batch, args.output)
     else:
-        interactive_mode(model, tokenizer)
+        interactive_mode(model, tokenizer, outcome_token_ids)
 
 
 if __name__ == "__main__":

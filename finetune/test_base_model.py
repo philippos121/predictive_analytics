@@ -39,10 +39,24 @@ def load_base_model(model_name: str):
     """Lädt das Basis-Modell mit 4-bit Quantisierung (ohne Adapter)."""
     logger.info(f"Lade Basis-Modell: {model_name}")
 
+    # GPU-Speicher freigeben, falls von einem vorherigen Lauf belegt
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    free_mem = torch.cuda.mem_get_info()[0] / 1024**3
+    total_mem = torch.cuda.mem_get_info()[1] / 1024**3
+    logger.info(f"GPU-Speicher: {free_mem:.1f} GiB frei / {total_mem:.1f} GiB gesamt")
+    if free_mem < 6.0:
+        logger.warning(
+            f"Nur {free_mem:.1f} GiB frei — andere Python-Prozesse beenden! "
+            f"(taskkill /F /IM python.exe oder Task-Manager)"
+        )
+
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_compute_dtype=torch.float16,
         bnb_4bit_use_double_quant=True,
     )
 
@@ -52,8 +66,10 @@ def load_base_model(model_name: str):
         model_name,
         quantization_config=bnb_config,
         device_map="auto",
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch.float16,
+        low_cpu_mem_usage=True,
         trust_remote_code=True,
+        max_memory={0: "14GiB", "cpu": "24GiB"},
     )
     model.eval()
 

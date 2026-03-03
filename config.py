@@ -260,16 +260,21 @@ SECTION_LABELS = {
 }
 
 # ─── Neural Network Configuration ───────────────────────────────────────────────
-# Hybrid: per-section embedding encoders + structured feature encoder → fusion → 3-class.
+# v4.0 — Cross-Attention Hybrid Architecture.
 #
-# Embeddings are first reduced via PCA (1024 → PCA_DIM=128), then each section
-# is encoded to 64-dim and concatenated with structured features for fusion.
+# Key change: Kläger ↔ Beklagter cross-attention BEFORE fusion.
+# Shared embedding encoder (parameter-efficient), then cross-attention
+# lets the model learn that outcomes depend on the INTERACTION between
+# claims and defenses.
+#
+# Embeddings: PCA (1024 → PCA_DIM=128) → shared encoder → cross-attention → fusion.
 #
 # Parameteranzahl ca.:
-#   2 × EmbeddingEncoder (128→64→64):    ~22 K  (kläger + beklagter)
-#   StructuredEncoder (struct→32):        ~3 K
-#   Fusion (160→64→2):                    ~11 K
-#   Gesamt: ~36 K
+#   1 × shared EmbeddingEncoder (128→64→64):  ~11 K  (kläger + beklagter share weights)
+#   CrossAttentionBlock (64→64):               ~17 K  (Q/K/V + output projections)
+#   StructuredEncoder (struct→32):             ~3 K   (with attention prior)
+#   Fusion (160→64→2):                         ~11 K
+#   Gesamt: ~42 K
 NN_CONFIG = {
     "embedding_hidden_dim": 64,      # Intermediate dim per embedding encoder
     "embedding_output_dim": 64,      # Output dim per embedding encoder

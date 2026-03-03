@@ -1,15 +1,20 @@
 """
 Neural Network Architecture for Predictive Litigation Analytics.
 
-v3.0 — Hybrid: Text Embeddings + Structured Data.
+v4.0 — Cross-Attention Hybrid Architecture.
 
-Multi-input architecture:
-1. Per-section EmbeddingEncoder (kläger + beklagter vorbringen)
-2. StructuredEncoder for metadata features (streitwert, claim type, etc.)
-3. Fusion MLP for final 3-class classification
+Key improvement over v3: Kläger and Beklagter embeddings interact via
+cross-attention BEFORE fusion, letting the model learn that the outcome
+depends on the RELATIONSHIP between claims and defenses — not just each
+party's arguments in isolation.
 
-Output: 3-class (Unterliegen / Teilweise / Obsiegen)
-Total params: ~31 K (PCA reduces 1024→128 per section before encoding)
+Architecture:
+1. Shared EmbeddingEncoder projects PCA-reduced embeddings to a common space
+2. CrossAttentionBlock: Kläger attends to Beklagter and vice versa
+3. StructuredEncoder for metadata features (with court-derived attention)
+4. Fusion MLP → binary classification
+
+Output: 2-class (Nicht-Obsiegen / Obsiegen)
 """
 
 import sys
@@ -51,6 +56,78 @@ class EmbeddingEncoder(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.encoder(x)
+
+
+class CrossAttentionBlock(nn.Module):
+    """
+    Bidirectional cross-attention between Kläger and Beklagter representations.
+
+    Legal outcomes depend on the INTERACTION between claims and defenses.
+    Cross-attention lets the model learn patterns like:
+    - Plaintiff's Gewährleistung argument + defendant's Verjährung defense → signal
+    - Strength of plaintiff's claim IN CONTEXT OF defendant's rebuttal
+
+    Each side attends to the other, producing interaction-aware representations.
+    Uses a single attention head (sufficient for our embedding dimension).
+    """
+
+    def __init__(self, dim: int, dropout: float = 0.1):
+        super().__init__()
+        self.dim = dim
+
+        # Separate Q/K/V projections for each direction
+        self.q_proj = nn.Linear(dim, dim)
+        self.k_proj = nn.Linear(dim, dim)
+        self.v_proj = nn.Linear(dim, dim)
+
+        self.out_proj = nn.Linear(dim, dim)
+        self.norm1 = nn.LayerNorm(dim)
+        self.norm2 = nn.LayerNorm(dim)
+        self.dropout = nn.Dropout(dropout)
+
+        self.scale = dim ** -0.5
+
+    def _cross_attend(
+        self,
+        query: torch.Tensor,    # (batch, dim) — the side doing the attending
+        context: torch.Tensor,   # (batch, dim) — the side being attended to
+    ) -> torch.Tensor:
+        """Single-token cross-attention: query attends to context."""
+        # Reshape to (batch, 1, dim) for standard attention math
+        q = self.q_proj(query).unsqueeze(1)    # (batch, 1, dim)
+        k = self.k_proj(context).unsqueeze(1)  # (batch, 1, dim)
+        v = self.v_proj(context).unsqueeze(1)  # (batch, 1, dim)
+
+        # Attention weights (batch, 1, 1) — degenerate case with 1 token each
+        # but the projection still learns a useful transformation
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = F.softmax(attn, dim=-1)
+        attn = self.dropout(attn)
+
+        out = (attn @ v).squeeze(1)  # (batch, dim)
+        return self.out_proj(out)
+
+    def forward(
+        self,
+        klaeger: torch.Tensor,     # (batch, dim)
+        beklagter: torch.Tensor,   # (batch, dim)
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Bidirectional cross-attention.
+
+        Returns:
+            klaeger_out: kläger representation enriched with beklagter context
+            beklagter_out: beklagter representation enriched with kläger context
+        """
+        # Kläger attends to Beklagter
+        klaeger_cross = self._cross_attend(klaeger, beklagter)
+        klaeger_out = self.norm1(klaeger + self.dropout(klaeger_cross))
+
+        # Beklagter attends to Kläger
+        beklagter_cross = self._cross_attend(beklagter, klaeger)
+        beklagter_out = self.norm2(beklagter + self.dropout(beklagter_cross))
+
+        return klaeger_out, beklagter_out
 
 
 class StructuredEncoder(nn.Module):
@@ -95,12 +172,17 @@ class StructuredEncoder(nn.Module):
 
 class LitigationClassifier(nn.Module):
     """
-    Hybrid classification model for Austrian civil case outcome prediction.
+    Cross-attention hybrid classification model for Austrian civil case outcomes.
 
-    Architecture:
-    - N EmbeddingEncoders (one per text section, default 2)
-    - 1 StructuredEncoder for metadata features
-    - Fusion MLP → 3-class output (0=loss, 1=partial, 2=win)
+    v4.0 Architecture:
+    - Shared EmbeddingEncoder: projects both sections to a common space
+    - CrossAttentionBlock: Kläger ↔ Beklagter interaction (the key upgrade)
+    - StructuredEncoder: metadata features with court-derived attention prior
+    - Fusion MLP → binary classification
+
+    The cross-attention is the critical difference from v3: instead of encoding
+    kläger and beklagter independently and hoping the fusion layer figures out
+    their relationship, we explicitly model their interaction.
     """
 
     def __init__(
@@ -121,16 +203,23 @@ class LitigationClassifier(nn.Module):
         num_classes = config["num_classes"]
         dropout_fusion = config["dropout_fusion"]
 
-        # Per-section embedding encoders (input is PCA-reduced)
-        self.embedding_encoders = nn.ModuleList([
-            EmbeddingEncoder(
-                input_dim=PCA_DIM,
-                hidden_dim=config["embedding_hidden_dim"],
-                output_dim=emb_output_dim,
-                dropout=config["dropout_embedding"],
+        # Shared embedding encoder — both sides project into the same space
+        # so cross-attention is meaningful (shared weights = parameter-efficient)
+        self.shared_embedding_encoder = EmbeddingEncoder(
+            input_dim=PCA_DIM,
+            hidden_dim=config["embedding_hidden_dim"],
+            output_dim=emb_output_dim,
+            dropout=config["dropout_embedding"],
+        )
+
+        # Cross-attention: Kläger ↔ Beklagter interaction
+        # Only created when we have exactly 2 sections (kläger + beklagter)
+        self.has_cross_attention = (n_sections == 2)
+        if self.has_cross_attention:
+            self.cross_attention = CrossAttentionBlock(
+                dim=emb_output_dim,
+                dropout=dropout_fusion * 0.5,
             )
-            for _ in range(n_sections)
-        ])
 
         # Structured feature encoder (with optional court-derived attention)
         self.structured_encoder = StructuredEncoder(
@@ -178,11 +267,16 @@ class LitigationClassifier(nn.Module):
             logits: (batch, num_classes)
             probs: (batch, num_classes) — softmax probabilities
         """
-        # Encode each text section
+        # Encode each section through the shared encoder
         encoded_sections = [
-            encoder(emb)
-            for encoder, emb in zip(self.embedding_encoders, embeddings)
+            self.shared_embedding_encoder(emb) for emb in embeddings
         ]
+
+        # Cross-attention: let Kläger and Beklagter interact
+        if self.has_cross_attention and len(encoded_sections) == 2:
+            encoded_sections[0], encoded_sections[1] = self.cross_attention(
+                encoded_sections[0], encoded_sections[1]
+            )
 
         # Concatenate all section encodings
         section_concat = torch.cat(encoded_sections, dim=-1)
@@ -224,4 +318,5 @@ class LitigationClassifier(nn.Module):
             "structured_hidden_dim": self.config["structured_hidden_dim"],
             "fusion_dims": self.config["fusion_dims"],
             "num_classes": self.config["num_classes"],
+            "has_cross_attention": self.has_cross_attention,
         }

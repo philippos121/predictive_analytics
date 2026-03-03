@@ -38,14 +38,14 @@ Ausgabe: Hugging-Face-Dataset im Chat-Format, gespeichert auf Festplatte.
 
 import json
 import argparse
-import sys
 from pathlib import Path
 
 from datasets import Dataset, DatasetDict
 from loguru import logger
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import DATASET_FILE, OUTCOME_LABELS
+# Default input: ../data/extracted/cases_dataset.json (relative to this script)
+_SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_INPUT = _SCRIPT_DIR.parent / "data" / "extracted" / "cases_dataset.json"
 
 # ---------------------------------------------------------------------------
 # Outcome-Mapping (numerisch ↔ Text)
@@ -223,8 +223,8 @@ def main():
     parser.add_argument(
         "--input", "-i",
         type=Path,
-        default=DATASET_FILE,
-        help=f"Pfad zur JSON-Eingabedatei (default: {DATASET_FILE})",
+        default=DEFAULT_INPUT,
+        help=f"Pfad zur JSON-Eingabedatei (default: {DEFAULT_INPUT})",
     )
     parser.add_argument(
         "--output", "-o",

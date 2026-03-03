@@ -14,13 +14,16 @@ Basis-Modell: mistralai/Mistral-7B-Instruct-v0.3
 """
 
 import argparse
+import json
 import os
+import re
 from pathlib import Path
 
 import torch
 from datasets import load_from_disk
 from loguru import logger
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -32,10 +35,12 @@ from trl import SFTTrainer, SFTConfig
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
+_SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
-DEFAULT_OUTPUT = "output/legal-lora"
-DEFAULT_DATASET = "data/prepared_dataset"
+DEFAULT_OUTPUT = str(_SCRIPT_DIR.parent / "output" / "legal-lora")
+DEFAULT_DATASET = str(_SCRIPT_DIR.parent / "data" / "prepared_dataset")
 MAX_SEQ_LEN = 1024  # Token-Limit pro Sample (spart VRAM)
+LABEL_CLASSES = ["OBSIEGEN", "TEILWEISE", "UNTERLIEGEN"]
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +187,100 @@ def get_training_args(output_dir: str, num_train_samples: int) -> SFTConfig:
 
 
 # ---------------------------------------------------------------------------
+# Klassifikations-Evaluation (Accuracy, F1, Confusion Matrix)
+# ---------------------------------------------------------------------------
+def evaluate_classification(model, tokenizer, val_ds, output_dir: str):
+    """Generiert Vorhersagen auf dem Validierungs-Set und berechnet Metriken."""
+    logger.info("=== Klassifikations-Evaluation ===")
+
+    model.eval()
+    y_true = []
+    y_pred = []
+
+    for i, sample in enumerate(val_ds):
+        messages = sample["messages"]
+
+        # Erwartetes Label aus der Assistant-Antwort
+        true_label = messages[-1]["content"].strip()
+        y_true.append(true_label)
+
+        # Nur System + User als Input (ohne Assistant-Antwort)
+        input_messages = messages[:-1]
+        input_text = tokenizer.apply_chat_template(
+            input_messages, tokenize=False, add_generation_prompt=True
+        )
+        inputs = tokenizer(input_text, return_tensors="pt", truncation=True,
+                           max_length=MAX_SEQ_LEN).to(model.device)
+
+        with torch.no_grad():
+            output_ids = model.generate(
+                **inputs,
+                max_new_tokens=20,
+                do_sample=False,
+                temperature=1.0,
+            )
+
+        # Nur die generierten Tokens dekodieren
+        generated_ids = output_ids[0][inputs["input_ids"].shape[1]:]
+        prediction = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+
+        # Label aus der Antwort extrahieren (erstes Wort matchen)
+        pred_label = "UNBEKANNT"
+        for label in LABEL_CLASSES:
+            if label in prediction.upper():
+                pred_label = label
+                break
+        y_pred.append(pred_label)
+
+        if (i + 1) % 50 == 0:
+            logger.info(f"  {i + 1}/{len(val_ds)} Samples ausgewertet...")
+
+    # Metriken berechnen
+    acc = accuracy_score(y_true, y_pred)
+    logger.info(f"Accuracy: {acc:.4f} ({sum(1 for a, b in zip(y_true, y_pred) if a == b)}/{len(y_true)})")
+
+    # Classification Report (Precision, Recall, F1 pro Klasse)
+    report = classification_report(
+        y_true, y_pred,
+        labels=LABEL_CLASSES,
+        target_names=LABEL_CLASSES,
+        zero_division=0,
+    )
+    logger.info(f"\nClassification Report:\n{report}")
+
+    # Confusion Matrix
+    cm = confusion_matrix(y_true, y_pred, labels=LABEL_CLASSES)
+    logger.info(f"Confusion Matrix (Zeilen=True, Spalten=Predicted):")
+    logger.info(f"             {LABEL_CLASSES}")
+    for label, row in zip(LABEL_CLASSES, cm):
+        logger.info(f"  {label:12s} {row.tolist()}")
+
+    # Metriken als JSON speichern
+    report_dict = classification_report(
+        y_true, y_pred,
+        labels=LABEL_CLASSES,
+        target_names=LABEL_CLASSES,
+        zero_division=0,
+        output_dict=True,
+    )
+    eval_results = {
+        "accuracy": acc,
+        "classification_report": report_dict,
+        "confusion_matrix": cm.tolist(),
+        "labels": LABEL_CLASSES,
+        "num_samples": len(y_true),
+        "num_unknown": y_pred.count("UNBEKANNT"),
+    }
+
+    results_path = Path(output_dir) / "eval_classification.json"
+    with open(results_path, "w", encoding="utf-8") as f:
+        json.dump(eval_results, f, indent=2, ensure_ascii=False)
+    logger.success(f"Klassifikations-Ergebnisse gespeichert unter {results_path}")
+
+    return eval_results
+
+
+# ---------------------------------------------------------------------------
 # Hauptfunktion
 # ---------------------------------------------------------------------------
 def train(
@@ -227,18 +326,20 @@ def train(
     tokenizer.save_pretrained(str(final_dir))
     logger.success(f"LoRA-Adapter gespeichert unter {final_dir}")
 
-    # 8. Evaluation
+    # 8. Evaluation — Loss
     logger.info("=== Evaluation auf Validierungs-Set ===")
     eval_metrics = trainer.evaluate()
     logger.info(f"Eval-Loss: {eval_metrics.get('eval_loss', '?'):.4f}")
 
-    # Metriken speichern
-    import json
+    # 9. Klassifikations-Metriken (Accuracy, F1, Confusion Matrix)
+    eval_classification(model, tokenizer, val_ds, output_dir)
+
+    # Trainings-Metriken speichern
     metrics_path = Path(output_dir) / "training_metrics.json"
     all_metrics = {**metrics, **eval_metrics}
-    with open(metrics_path, "w") as f:
+    with open(metrics_path, "w", encoding="utf-8") as f:
         json.dump(all_metrics, f, indent=2)
-    logger.info(f"Metriken gespeichert unter {metrics_path}")
+    logger.info(f"Trainings-Metriken gespeichert unter {metrics_path}")
 
     return trainer
 
@@ -282,7 +383,7 @@ def main():
         raise SystemExit(1)
 
     gpu_name = torch.cuda.get_device_name(0)
-    gpu_mem = torch.cuda.get_device_properties(0).total_mem / 1024**3
+    gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1024**3
     logger.info(f"GPU: {gpu_name} ({gpu_mem:.1f} GB)")
 
     if gpu_mem < 14:

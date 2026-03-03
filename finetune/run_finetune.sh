@@ -32,8 +32,14 @@ echo -e "${GREEN}=== LLM-Finetuning für Verfahrensausgang-Prognose ===${NC}"
 echo ""
 
 # --- 0. Argumente prüfen ---
-if [ $# -lt 1 ]; then
-    echo -e "${YELLOW}Verwendung: bash run_finetune.sh <json_datei>${NC}"
+DEFAULT_INPUT="../data/extracted/cases_dataset.json"
+INPUT_JSON="${1:-$DEFAULT_INPUT}"
+
+if [ ! -f "$INPUT_JSON" ]; then
+    echo -e "${RED}Fehler: Datei '$INPUT_JSON' nicht gefunden.${NC}"
+    echo ""
+    echo -e "${YELLOW}Verwendung: bash run_finetune.sh [json_datei]${NC}"
+    echo "  Ohne Argument wird '$DEFAULT_INPUT' verwendet."
     echo ""
     echo "Testdaten erzeugen:"
     echo "  python generate_sample_data.py -n 10000 -o sample_cases.json"
@@ -41,11 +47,7 @@ if [ $# -lt 1 ]; then
     exit 1
 fi
 
-INPUT_JSON="$1"
-if [ ! -f "$INPUT_JSON" ]; then
-    echo -e "${RED}Fehler: Datei '$INPUT_JSON' nicht gefunden.${NC}"
-    exit 1
-fi
+echo "  Eingabedatei: $INPUT_JSON"
 
 # --- 1. Abhängigkeiten installieren ---
 echo -e "${YELLOW}[1/4] Installiere Abhängigkeiten...${NC}"

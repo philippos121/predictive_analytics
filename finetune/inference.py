@@ -108,11 +108,14 @@ def predict(
 
 
 def extract_outcome(response: str) -> str:
-    """Extrahiert das Ergebnis (OBSIEGEN/UNTERLIEGEN) aus der Antwort."""
+    """Extrahiert das Ergebnis (OBSIEGEN/TEILWEISE/UNTERLIEGEN) aus der Antwort."""
     upper = response.upper()
+    # Check TEILWEISE first — "TEILWEISE" should not match "OBSIEGEN" or "UNTERLIEGEN"
+    if "TEILWEISE" in upper:
+        return "teilweise"
     if "OBSIEGEN" in upper:
         return "obsiegen"
-    elif "UNTERLIEGEN" in upper:
+    if "UNTERLIEGEN" in upper:
         return "unterliegen"
     return "unklar"
 

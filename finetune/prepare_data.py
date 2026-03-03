@@ -2,25 +2,60 @@
 prepare_data.py — Konvertiert das JSON-Dateiformat in ein Trainings-Dataset
 für das QLoRA-Finetuning.
 
-Erwartetes JSON-Eingabeformat (Array von Objekten):
+Unterstützte Eingabeformate:
+
+1. Extractor-Format (aus data_extractor/data_manager.py):
 [
     {
-        "klaegervorbringen": "Der Kläger bringt vor, dass ...",
-        "beklagtenvorbringen": "Der Beklagte wendet ein, dass ...",
-        "outcome": "obsiegen"   // oder "unterliegen"
+        "case_id": "F566CA14-4F7",
+        "filename": "...",
+        "structured": { "outcome": 0 },
+        "sections": {
+            "klaegervorbringen": "...",
+            "beklagtenvorbringen": "..."
+        },
+        ...
     },
     ...
 ]
+
+2. Flat-Format (aus generate_sample_data.py):
+[
+    {
+        "klaegervorbringen": "...",
+        "beklagtenvorbringen": "...",
+        "outcome": "obsiegen"
+    },
+    ...
+]
+
+Outcome-Mapping:  0 / "unterliegen" → UNTERLIEGEN
+                  1 / "teilweise"   → TEILWEISE
+                  2 / "obsiegen"    → OBSIEGEN
 
 Ausgabe: Hugging-Face-Dataset im Chat-Format, gespeichert auf Festplatte.
 """
 
 import json
 import argparse
+import sys
 from pathlib import Path
 
 from datasets import Dataset, DatasetDict
 from loguru import logger
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from config import DATASET_FILE, OUTCOME_LABELS
+
+# ---------------------------------------------------------------------------
+# Outcome-Mapping (numerisch ↔ Text)
+# ---------------------------------------------------------------------------
+OUTCOME_INT_TO_LABEL = {0: "UNTERLIEGEN", 1: "TEILWEISE", 2: "OBSIEGEN"}
+OUTCOME_STR_TO_LABEL = {
+    "unterliegen": "UNTERLIEGEN",
+    "teilweise": "TEILWEISE",
+    "obsiegen": "OBSIEGEN",
+}
 
 # ---------------------------------------------------------------------------
 # System-Prompt für das Modell
@@ -29,7 +64,8 @@ SYSTEM_PROMPT = (
     "Du bist ein juristischer Prognose-Assistent für österreichische Zivilverfahren. "
     "Auf Basis des Klägervorbringens und des Beklagtenvorbringens prognostizierst du "
     "den wahrscheinlichen Verfahrensausgang. Antworte ausschließlich mit "
-    "'OBSIEGEN' (Kläger gewinnt) oder 'UNTERLIEGEN' (Kläger verliert), "
+    "'OBSIEGEN' (Kläger gewinnt), 'TEILWEISE' (teilweises Obsiegen/Unterliegen) "
+    "oder 'UNTERLIEGEN' (Kläger verliert), "
     "gefolgt von einer kurzen Begründung in 1–3 Sätzen."
 )
 
@@ -45,15 +81,22 @@ def build_user_prompt(klaeger: str, beklagter: str) -> str:
     )
 
 
-def build_assistant_response(outcome: str) -> str:
-    """Erstellt die erwartete Modell-Antwort."""
-    outcome_lower = outcome.strip().lower()
-    if outcome_lower == "obsiegen":
-        return "OBSIEGEN"
-    elif outcome_lower == "unterliegen":
-        return "UNTERLIEGEN"
-    else:
-        raise ValueError(f"Unbekannter Outcome-Wert: '{outcome}'. Erlaubt: obsiegen, unterliegen")
+def build_assistant_response(outcome) -> str:
+    """Erstellt die erwartete Modell-Antwort. Akzeptiert int (0/1/2) oder str."""
+    if isinstance(outcome, int):
+        label = OUTCOME_INT_TO_LABEL.get(outcome)
+        if label is None:
+            raise ValueError(f"Unbekannter Outcome-Wert: {outcome}. Erlaubt: 0, 1, 2")
+        return label
+
+    outcome_lower = str(outcome).strip().lower()
+    label = OUTCOME_STR_TO_LABEL.get(outcome_lower)
+    if label is None:
+        raise ValueError(
+            f"Unbekannter Outcome-Wert: '{outcome}'. "
+            f"Erlaubt: obsiegen, teilweise, unterliegen (oder 0, 1, 2)"
+        )
+    return label
 
 
 def format_as_chat(entry: dict) -> dict:
@@ -75,8 +118,44 @@ def format_as_chat(entry: dict) -> dict:
     return {"messages": messages}
 
 
+def _normalize_entry(raw: dict) -> dict | None:
+    """
+    Normalisiert einen Eintrag aus entweder dem Extractor-Format oder dem
+    Flat-Format in das einheitliche Schema:
+        {"klaegervorbringen": str, "beklagtenvorbringen": str, "outcome": int|str}
+    Gibt None zurück, wenn Pflichtfelder fehlen.
+    """
+    # --- Extractor-Format (nested) ---
+    if "sections" in raw and "structured" in raw:
+        sections = raw.get("sections", {})
+        klaeger = sections.get("klaegervorbringen", "").strip()
+        beklagter = sections.get("beklagtenvorbringen", "").strip()
+        outcome = raw["structured"].get("outcome")
+        if outcome is None:
+            return None
+        if not klaeger:
+            return None
+        return {
+            "klaegervorbringen": klaeger,
+            "beklagtenvorbringen": beklagter,
+            "outcome": outcome,
+        }
+
+    # --- Flat-Format (from generate_sample_data / legacy) ---
+    klaeger = raw.get("klaegervorbringen", "").strip()
+    beklagter = raw.get("beklagtenvorbringen", "").strip()
+    outcome = raw.get("outcome")
+    if outcome is None or not klaeger:
+        return None
+    return {
+        "klaegervorbringen": klaeger,
+        "beklagtenvorbringen": beklagter,
+        "outcome": outcome,
+    }
+
+
 def load_and_validate(json_path: Path) -> list[dict]:
-    """Lädt das JSON und prüft die Pflichtfelder."""
+    """Lädt das JSON und prüft die Pflichtfelder. Akzeptiert beide Formate."""
     logger.info(f"Lade Daten aus {json_path}")
     with open(json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -84,16 +163,20 @@ def load_and_validate(json_path: Path) -> list[dict]:
     if not isinstance(data, list):
         raise TypeError("JSON-Datei muss ein Array von Objekten enthalten.")
 
-    required_keys = {"klaegervorbringen", "beklagtenvorbringen", "outcome"}
-    errors = 0
-    for i, entry in enumerate(data):
-        missing = required_keys - set(entry.keys())
-        if missing:
-            logger.warning(f"Eintrag {i}: Fehlende Felder {missing} — wird übersprungen.")
-            errors += 1
+    valid = []
+    skipped = 0
+    for i, raw in enumerate(data):
+        entry = _normalize_entry(raw)
+        if entry is None:
+            logger.warning(
+                f"Eintrag {i} ({raw.get('filename', raw.get('case_id', '?'))}): "
+                f"Fehlende Pflichtfelder — wird übersprungen."
+            )
+            skipped += 1
+        else:
+            valid.append(entry)
 
-    valid = [e for e in data if required_keys.issubset(e.keys())]
-    logger.info(f"{len(valid)} gültige Einträge geladen ({errors} übersprungen)")
+    logger.info(f"{len(valid)} gültige Einträge geladen ({skipped} übersprungen)")
     return valid
 
 
@@ -113,14 +196,14 @@ def create_dataset(
     split = ds.train_test_split(test_size=val_ratio, seed=seed)
     dd = DatasetDict({"train": split["train"], "validation": split["test"]})
 
-    # Statistiken
-    outcomes = [e["outcome"].strip().lower() for e in entries]
-    n_obsiegen = outcomes.count("obsiegen")
-    n_unterliegen = outcomes.count("unterliegen")
-    logger.info(
-        f"Outcome-Verteilung: obsiegen={n_obsiegen} ({n_obsiegen/len(outcomes)*100:.1f}%), "
-        f"unterliegen={n_unterliegen} ({n_unterliegen/len(outcomes)*100:.1f}%)"
+    # Statistiken — Outcome-Verteilung über alle 3 Klassen
+    labels = [build_assistant_response(e["outcome"]) for e in entries]
+    counts = {lbl: labels.count(lbl) for lbl in ["OBSIEGEN", "TEILWEISE", "UNTERLIEGEN"]}
+    total = len(labels)
+    dist_str = " | ".join(
+        f"{lbl}={n} ({n/total*100:.1f}%)" for lbl, n in counts.items() if n > 0
     )
+    logger.info(f"Outcome-Verteilung: {dist_str}")
     logger.info(f"Train: {len(dd['train'])} | Validation: {len(dd['validation'])}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -140,8 +223,8 @@ def main():
     parser.add_argument(
         "--input", "-i",
         type=Path,
-        required=True,
-        help="Pfad zur JSON-Eingabedatei (Array von Fällen)",
+        default=DATASET_FILE,
+        help=f"Pfad zur JSON-Eingabedatei (default: {DATASET_FILE})",
     )
     parser.add_argument(
         "--output", "-o",

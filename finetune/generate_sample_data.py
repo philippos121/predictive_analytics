@@ -166,11 +166,10 @@ def generate_case() -> dict:
         mitverschulden_grund=mitverschulden_grund,
     )
 
-    # Outcome (leicht gewichtet — in der Realität klagen Anwälte tendenziell
-    # nur bei guten Chancen)
+    # Outcome — 3 Klassen mit realistischer Verteilung
     outcome = random.choices(
-        ["obsiegen", "unterliegen"],
-        weights=[0.55, 0.45],
+        ["obsiegen", "teilweise", "unterliegen"],
+        weights=[0.45, 0.15, 0.40],
         k=1,
     )[0]
 
@@ -211,9 +210,10 @@ def main():
     with open(args.output, "w", encoding="utf-8") as f:
         json.dump(cases, f, indent=2, ensure_ascii=False)
 
-    n_obsiegen = sum(1 for c in cases if c["outcome"] == "obsiegen")
-    print(f"✓ {len(cases)} Fälle generiert → {args.output}")
-    print(f"  Obsiegen: {n_obsiegen} | Unterliegen: {len(cases) - n_obsiegen}")
+    from collections import Counter
+    counts = Counter(c["outcome"] for c in cases)
+    print(f"  {len(cases)} Fälle generiert -> {args.output}")
+    print(f"  Obsiegen: {counts['obsiegen']} | Teilweise: {counts['teilweise']} | Unterliegen: {counts['unterliegen']}")
 
 
 if __name__ == "__main__":

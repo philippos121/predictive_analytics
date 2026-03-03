@@ -2,15 +2,15 @@
 Feature Engineer: Transforms raw case data into numeric tensors
 suitable for the neural network.
 
-v3.0 — Hybrid: embeddings + structured metadata.
+v4.0 — No PCA by default (100 K+ cases).
 Handles:
 - Embedding loading, truncation, and stacking from HDF5
+- Optional PCA reduction (USE_PCA flag in config)
 - Structured feature encoding (claim types, defenses, streitwert, etc.)
 - Train/val split
 - Feature normalization
 """
 
-import json
 import math
 import pickle
 import sys
@@ -28,7 +28,6 @@ from config import (
     DEFENSE_TYPES,
     EMBEDDING_DIM_USED,
     EMBEDDING_SECTIONS,
-    FEATURE_RELEVANCE_FILE,
     LEGAL_ANALYSIS_BOOL_FIELDS,
     LEGAL_ANALYSIS_LIST_FIELDS,
     NUM_CLASSES,
@@ -36,6 +35,7 @@ from config import (
     PCA_FILE,
     SCALER_FILE,
     TRAINING_CONFIG,
+    USE_PCA,
     map_outcome_label,
 )
 
@@ -171,54 +171,6 @@ class FeatureEngineer:
         x = self.encode_case(case)
         return self.scaler.transform(x.reshape(1, -1))[0]
 
-    def build_attention_weights(
-        self,
-        relevance_path: Path = FEATURE_RELEVANCE_FILE,
-    ) -> Optional[np.ndarray]:
-        """
-        Build a per-feature attention weight vector from court-derived relevance data.
-
-        Returns shape (feature_dim,) with weights >=0.5 for all features.
-        Non-legal-analysis features (streitwert, claim_type, etc.) get weight 1.0.
-        Legal-analysis boolean features get their court-derived weight.
-        Returns None if the relevance file doesn't exist.
-        """
-        if not relevance_path.exists():
-            return None
-
-        with open(relevance_path, "r") as f:
-            data = json.load(f)
-
-        attention_weights_map = data.get("attention_weights", {})
-        if not attention_weights_map:
-            return None
-
-        dim = self.feature_dim
-        weights = np.ones(dim, dtype=np.float32)
-
-        # Compute offset to the legal_analysis bool section
-        offset = 0
-        offset += 1                          # log_streitwert
-        offset += len(CLAIM_TYPES) + 1       # claim_type one-hot
-        offset += len(DEFENSE_TYPES)         # defense flags
-        offset += 1                          # klaeger_beweismittel
-        offset += 1                          # beklagter_beweismittel
-        offset += 1                          # anspruchsgruende count
-        offset += len(self.INSTANZ_CLASSES)  # court level one-hot
-        offset += 1                          # sachverstaendiger
-
-        # Fill in legal_analysis bool weights (same order as encode_case)
-        idx = offset
-        for section, fields in LEGAL_ANALYSIS_BOOL_FIELDS.items():
-            for field in fields:
-                if field in attention_weights_map:
-                    weights[idx] = attention_weights_map[field]
-                idx += 1
-
-        # List count features keep weight 1.0 (already at default)
-
-        return weights
-
     def save(self, path: Path = SCALER_FILE) -> None:
         """Persist the fitted scaler."""
         with open(path, "wb") as f:
@@ -236,17 +188,17 @@ class FeatureEngineer:
         self.is_fitted = True
 
 
-# ─── Embedding PCA ───────────────────────────────────────────────────────────────
+# ─── Embedding PCA (optional — disabled by default for 100K+ cases) ──────────
 
 class EmbeddingPCA:
     """
-    PCA dimensionality reduction for text embeddings.
+    Optional PCA dimensionality reduction for text embeddings.
 
-    Fits one shared PCA across all embedding sections (kläger + beklagter),
-    reducing from EMBEDDING_DIM_USED (1024) to PCA_DIM (128).
-    This addresses the curse of dimensionality: with ~6400 training samples
-    and 2×1024 input dims, the model has too few examples per dimension.
-    PCA reduces to 2×128 = 256 dims → ~25 examples per dimension.
+    Disabled by default (USE_PCA = False in config).  With 100K+ cases
+    the curse of dimensionality is not a problem, and PCA discards
+    information the model could use.
+
+    Kept for small-dataset experiments where sample/dimension ratio is low.
     """
 
     def __init__(self, n_components: int = PCA_DIM):
@@ -260,12 +212,7 @@ class EmbeddingPCA:
         embeddings_dict: dict[str, dict[str, np.ndarray]],
         cases: list[dict],
     ) -> "EmbeddingPCA":
-        """
-        Fit PCA on all training embeddings (pooled across sections).
-
-        All sections share one PCA so that kläger and beklagter embeddings
-        live in the same reduced space.
-        """
+        """Fit PCA on all training embeddings (pooled across sections)."""
         all_vecs = []
         for case in cases:
             cid = case["case_id"]
@@ -283,7 +230,7 @@ class EmbeddingPCA:
                 f"mit {self.n_components} Komponenten."
             )
 
-        X = np.stack(all_vecs)  # (N_total, 1024)
+        X = np.stack(all_vecs)
         self.pca.fit(X)
         self.is_fitted = True
         self.explained_variance_ratio_sum = float(
@@ -292,7 +239,7 @@ class EmbeddingPCA:
         return self
 
     def transform(self, vec: np.ndarray) -> np.ndarray:
-        """Transform a single 1024-dim embedding to PCA_DIM dimensions."""
+        """Transform a single embedding to PCA_DIM dimensions."""
         if not self.is_fitted:
             raise RuntimeError("EmbeddingPCA not fitted. Call fit() first.")
         return self.pca.transform(vec.reshape(1, -1))[0].astype(np.float32)
@@ -328,6 +275,13 @@ def truncate_embedding(vec: np.ndarray, dim: int = EMBEDDING_DIM_USED) -> np.nda
     return padded
 
 
+def _embedding_output_dim(pca: Optional[EmbeddingPCA] = None) -> int:
+    """Return the embedding dimension after optional PCA."""
+    if pca is not None and pca.is_fitted:
+        return pca.n_components
+    return EMBEDDING_DIM_USED
+
+
 def prepare_embeddings_for_case(
     emb_dict: dict[str, np.ndarray],
     dim: int = EMBEDDING_DIM_USED,
@@ -336,9 +290,11 @@ def prepare_embeddings_for_case(
     """
     Prepare embedding vectors for a single case.
     Returns list of embedding arrays, one per EMBEDDING_SECTIONS entry.
-    If pca is provided, applies PCA reduction after truncation.
+    If pca is provided and fitted, applies PCA reduction after truncation.
     """
     result = []
+    out_dim = _embedding_output_dim(pca)
+
     for section in EMBEDDING_SECTIONS:
         if section in emb_dict:
             vec = truncate_embedding(emb_dict[section], dim)
@@ -346,7 +302,6 @@ def prepare_embeddings_for_case(
                 vec = pca.transform(vec)
             result.append(vec)
         else:
-            out_dim = pca.n_components if (pca is not None and pca.is_fitted) else dim
             result.append(np.zeros(out_dim, dtype=np.float32))
     return result
 
@@ -360,7 +315,7 @@ class LitigationDataset(torch.utils.data.Dataset):
     Each item returns:
     - embeddings: list of tensors (one per section), each shape (emb_dim,)
     - structured: tensor of shape (feature_dim,)
-    - label: int (0, 1, 2)
+    - label: int
     """
 
     def __init__(
@@ -390,19 +345,16 @@ class LitigationDataset(torch.utils.data.Dataset):
         case = self.cases[case_idx]
         case_id = case["case_id"]
 
-        # Load, truncate, and optionally PCA-reduce embeddings
         emb_data = self.embeddings_dict[case_id]
         embeddings = [
             torch.tensor(vec, dtype=torch.float32)
             for vec in prepare_embeddings_for_case(emb_data, pca=self.pca)
         ]
 
-        # Structured features
         structured = torch.tensor(
             self.structured_features[case_idx], dtype=torch.float32
         )
 
-        # Label (mapped to NUM_CLASSES scheme)
         raw_label = int(case["structured"]["outcome"])
         label = map_outcome_label(raw_label)
 
@@ -423,7 +375,6 @@ def prepare_dataset(
     """
     np.random.seed(random_seed)
 
-    # Encode structured features
     structured_features = feature_engineer.fit_transform(cases)
 
     full_dataset = LitigationDataset(
@@ -433,7 +384,7 @@ def prepare_dataset(
     if len(full_dataset) == 0:
         raise ValueError("No valid labeled cases with embeddings found.")
 
-    # Stratified split (uses mapped labels for NUM_CLASSES scheme)
+    # Stratified split
     indices = list(range(len(full_dataset)))
     labels = [
         map_outcome_label(int(
@@ -475,7 +426,6 @@ def collate_fn(batch: list) -> tuple:
     """Collate for hybrid embedding + structured data."""
     n_sections = len(EMBEDDING_SECTIONS)
 
-    # Stack embeddings per section
     embeddings_per_section = [
         torch.stack([item[0][s] for item in batch])
         for s in range(n_sections)

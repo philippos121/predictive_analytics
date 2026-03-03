@@ -2,7 +2,7 @@
 Model Trainer: Training loop, validation, early stopping, and checkpointing
 for the LitigationClassifier neural network.
 
-v3.0 — Hybrid: Text Embeddings + Structured Data.
+v4.0 — Cross-Attention Hybrid Architecture (100 K+ cases, no PCA by default).
 """
 
 import json
@@ -26,6 +26,7 @@ from config import (
     SCALER_FILE,
     TRAINING_CONFIG,
     TRAINING_HISTORY_FILE,
+    USE_PCA,
 )
 from model.feature_engineer import (
     EmbeddingPCA,
@@ -99,9 +100,11 @@ class LitigationTrainer:
         cases: list[dict],
         embeddings_dict: dict,
     ) -> tuple:
-        """Prepare datasets for training (includes PCA fitting on embeddings)."""
-        # Fit PCA on all training embeddings
-        self.embedding_pca.fit(embeddings_dict, cases)
+        """Prepare datasets for training (optionally fits PCA on embeddings)."""
+        pca = None
+        if USE_PCA:
+            self.embedding_pca.fit(embeddings_dict, cases)
+            pca = self.embedding_pca
 
         train_ds, val_ds, full_ds = prepare_dataset(
             cases,
@@ -109,35 +112,15 @@ class LitigationTrainer:
             self.feature_engineer,
             val_split=self.config["val_split"],
             random_seed=self.config["random_seed"],
-            pca=self.embedding_pca,
+            pca=pca,
         )
 
         feature_dim = self.feature_engineer.feature_dim
         return train_ds, val_ds, full_ds, feature_dim
 
     def build_model(self, structured_dim: int) -> LitigationClassifier:
-        """Initialize the neural network.
-
-        If court-derived feature relevance weights are available
-        (from analysis/feature_relevance.py), they are used to initialize
-        the StructuredEncoder's attention vector — giving the model a prior
-        on which features courts typically rely on.
-        """
-        # Build attention weights from feature relevance analysis (if available)
-        attention_init = None
-        attention_weights = self.feature_engineer.build_attention_weights()
-        if attention_weights is not None:
-            attention_init = torch.tensor(attention_weights, dtype=torch.float32)
-            self.progress_callback(
-                msg="Feature-Attention aus Erstgericht-Analyse geladen.",
-                epoch=0, epochs=0, train_loss=0, val_loss=0,
-                train_acc=0, val_acc=0,
-            )
-
-        model = LitigationClassifier(
-            structured_dim=structured_dim,
-            structured_attention_init=attention_init,
-        )
+        """Initialize the neural network."""
+        model = LitigationClassifier(structured_dim=structured_dim)
         model = model.to(self.device)
         self.model = model
         return model
@@ -184,14 +167,16 @@ class LitigationTrainer:
 
         n_with_emb = len(full_ds)
 
-        self._log(
-            phase="prepared",
-            train_size=len(train_ds),
-            val_size=len(val_ds),
-            feature_dim=feature_dim,
-            n_with_embeddings=n_with_emb,
-            pca_variance_retained=self.embedding_pca.explained_variance_ratio_sum,
-        )
+        log_kwargs = {
+            "phase": "prepared",
+            "train_size": len(train_ds),
+            "val_size": len(val_ds),
+            "feature_dim": feature_dim,
+            "n_with_embeddings": n_with_emb,
+        }
+        if USE_PCA and self.embedding_pca.is_fitted:
+            log_kwargs["pca_variance_retained"] = self.embedding_pca.explained_variance_ratio_sum
+        self._log(**log_kwargs)
 
         if len(train_ds) < 2:
             raise ValueError(
@@ -490,7 +475,7 @@ class LitigationTrainer:
             raise ValueError("embeddings_dict required for neural net evaluation.")
 
         structured_features = self.feature_engineer.transform(cases)
-        pca = self.embedding_pca if self.embedding_pca.is_fitted else None
+        pca = self.embedding_pca if (USE_PCA and self.embedding_pca.is_fitted) else None
         full_ds = LitigationDataset(cases, embeddings_dict, structured_features, pca=pca)
         loader = DataLoader(
             full_ds, batch_size=32, shuffle=False, collate_fn=collate_fn
@@ -599,7 +584,7 @@ class LitigationTrainer:
 
         self.feature_engineer.save(SCALER_FILE)
 
-        if self.embedding_pca.is_fitted:
+        if USE_PCA and self.embedding_pca.is_fitted:
             self.embedding_pca.save(PCA_FILE)
 
         with open(TRAINING_HISTORY_FILE, "w") as f:
@@ -652,7 +637,7 @@ class LitigationTrainer:
         if SCALER_FILE.exists():
             self.feature_engineer.load(SCALER_FILE)
 
-        if PCA_FILE.exists():
+        if USE_PCA and PCA_FILE.exists():
             self.embedding_pca.load(PCA_FILE)
 
         return True

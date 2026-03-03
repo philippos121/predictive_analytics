@@ -1,7 +1,7 @@
 """
 Predictor: Apply the trained model to new cases for outcome prediction.
 
-v3.0 — Hybrid: Text Embeddings + Structured Data.
+v4.0 — Cross-Attention Hybrid Architecture.
 
 For prediction on new cases, embeddings must be computed via OpenAI API
 or provided directly. Structured features are encoded from case metadata.
@@ -26,7 +26,7 @@ from config import (
     EMBEDDING_SECTIONS,
     NUM_CLASSES,
     OUTCOME_LABELS,
-    PCA_DIM,
+    USE_PCA,
     recommended_ml_weight,
 )
 from model.feature_engineer import prepare_embeddings_for_case
@@ -114,13 +114,12 @@ class LitigationPredictor:
             structured, dtype=torch.float32
         ).unsqueeze(0).to(self.device)
 
-        # Prepare embeddings (with PCA if available)
+        # Prepare embeddings (with PCA only if USE_PCA is enabled)
         pca = self.trainer.embedding_pca
-        has_pca = pca is not None and pca.is_fitted
+        has_pca = USE_PCA and pca is not None and pca.is_fitted
         emb_dim = pca.n_components if has_pca else EMBEDDING_DIM_USED
 
         if embeddings is None:
-            # No embeddings available — use zero vectors (reduced accuracy)
             emb_list = [
                 np.zeros(emb_dim, dtype=np.float32)
                 for _ in EMBEDDING_SECTIONS

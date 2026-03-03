@@ -1,9 +1,9 @@
 """
 Shared configuration for the Predictive Litigation Analytics system.
 
-v3.0 — Hybrid: Text Embeddings + Structured Data.
+v4.0 — Cross-Attention Hybrid Architecture.
 Uses pre-computed text-embedding-3-large vectors (kläger/beklagten vorbringen)
-combined with structured metadata features for classification.
+with bidirectional cross-attention, combined with structured metadata features.
 """
 
 import os
@@ -47,7 +47,12 @@ OPENAI_EXTRACTION_MODEL = "gpt-5-nano-2025-08-07"
 OPENAI_EMBEDDING_MODEL = "text-embedding-3-large"
 EMBEDDING_DIM = 3072  # Full dimension of text-embedding-3-large
 EMBEDDING_DIM_USED = 1024  # Truncated dimension for training (first N dims)
-PCA_DIM = 128  # PCA-reduced dimension per section (1024 → 128)
+
+# PCA: disabled by default.  With 100 K+ cases the curse of dimensionality
+# is not a problem (100 K / (2 × 1024) ≈ 50 samples per dimension — fine).
+# Set USE_PCA = True + PCA_DIM for small-dataset experiments.
+USE_PCA = False
+PCA_DIM = 128  # Only used when USE_PCA = True
 
 # API rate limiting
 OPENAI_REQUEST_DELAY_SEC = 0.5       # Delay between API requests
@@ -260,41 +265,41 @@ SECTION_LABELS = {
 }
 
 # ─── Neural Network Configuration ───────────────────────────────────────────────
-# v4.0 — Cross-Attention Hybrid Architecture.
+# v4.0 — Cross-Attention Hybrid Architecture (100 K+ cases, no PCA).
 #
-# Key change: Kläger ↔ Beklagter cross-attention BEFORE fusion.
-# Shared embedding encoder (parameter-efficient), then cross-attention
-# lets the model learn that outcomes depend on the INTERACTION between
-# claims and defenses.
+# Full 1024-dim embeddings → shared encoder → multi-head cross-attention → fusion.
+# The cross-attention models the INTERACTION between Kläger and Beklagter —
+# the key insight that legal outcomes depend on claims IN CONTEXT OF defenses.
 #
-# Embeddings: PCA (1024 → PCA_DIM=128) → shared encoder → cross-attention → fusion.
+# With 100K cases we can use wider layers and lower dropout than v3.
 #
 # Parameteranzahl ca.:
-#   1 × shared EmbeddingEncoder (128→64→64):  ~11 K  (kläger + beklagter share weights)
-#   CrossAttentionBlock (64→64):               ~17 K  (Q/K/V + output projections)
-#   StructuredEncoder (struct→32):             ~3 K   (with attention prior)
-#   Fusion (160→64→2):                         ~11 K
-#   Gesamt: ~42 K
+#   SharedEmbeddingEncoder (1024→256→256):   ~330 K  (one encoder, shared weights)
+#   MultiHead CrossAttention (256, 4 heads): ~265 K  (Q/K/V + output + FFN)
+#   StructuredEncoder (77→64):               ~5 K
+#   Fusion (576→256→128→2):                  ~180 K
+#   Gesamt: ~780 K
 NN_CONFIG = {
-    "embedding_hidden_dim": 64,      # Intermediate dim per embedding encoder
-    "embedding_output_dim": 64,      # Output dim per embedding encoder
-    "structured_hidden_dim": 32,     # Structured feature encoder hidden dim
-    "fusion_dims": [64],             # Fusion layer dimensions (compact)
-    "dropout_embedding": 0.5,        # Dropout for embedding encoders
-    "dropout_fusion": 0.5,           # Dropout for fusion layers
+    "embedding_hidden_dim": 256,     # Intermediate dim per embedding encoder
+    "embedding_output_dim": 256,     # Output dim per embedding encoder
+    "structured_hidden_dim": 64,     # Structured feature encoder hidden dim
+    "fusion_dims": [256, 128],       # Deeper fusion (two layers)
+    "dropout_embedding": 0.3,        # Lower dropout — 100K cases regularize better
+    "dropout_fusion": 0.3,           # Lower dropout for fusion
+    "n_attention_heads": 4,          # Multi-head cross-attention
     "num_classes": NUM_CLASSES,
 }
 
 # ─── Training Configuration ─────────────────────────────────────────────────────
 TRAINING_CONFIG = {
-    "epochs": 200,
-    "batch_size": 64,
-    "learning_rate": 3e-4,
-    "weight_decay": 5e-2,
-    "lr_scheduler_patience": 7,
+    "epochs": 100,              # 100K cases — converges faster
+    "batch_size": 256,           # Larger batches with 100K cases
+    "learning_rate": 1e-3,       # Higher LR works with larger batches
+    "weight_decay": 1e-2,        # Lighter regularization — data regularizes
+    "lr_scheduler_patience": 5,
     "lr_scheduler_factor": 0.5,
-    "early_stopping_patience": 12,
-    "val_split": 0.2,
+    "early_stopping_patience": 10,
+    "val_split": 0.1,            # 10% val = 10K cases — plenty
     "random_seed": 42,
     "gradient_clip": 1.0,
 }

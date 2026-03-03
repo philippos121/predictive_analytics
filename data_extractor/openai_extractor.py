@@ -38,22 +38,29 @@ from config import (
 # ─── Extraction Prompt (metadata + outcome) ──────────────────────────────────────
 
 EXTRACTION_SYSTEM_PROMPT = """Du bist ein Experte für österreichisches Zivilrecht.
-Deine Aufgabe ist es, aus Texten österreichischer Zivilurteile präzise strukturierte
+Deine Aufgabe ist es, aus Texten von OGH- oder OLG-Entscheidungen die ERSTGERICHTLICHEN
 Daten zu extrahieren. Antworte ausschließlich mit validem JSON ohne jeglichen anderen Text.
 
 Wichtige Regeln:
+- Du analysierst Höchstgerichtsentscheidungen (OGH/OLG), extrahierst aber die ERSTGERICHT-Ebene
+- Outcome = Ausgang des ERSTGERICHTLICHEN Urteils aus Sicht des KLÄGERS (nicht das OGH/OLG-Ergebnis)
+- Gericht/Instanz = das ERSTGERICHT (BG oder LG), nicht OGH/OLG
 - Extrahiere KEINE Namen von Richtern, Parteien oder Anwälten
 - Fokussiere auf anspruchsrelevante, materiell-rechtliche Inhalte
 - Bei fehlenden Informationen: null für Felder, [] für Listen, false für Boolean
-- Outcome: Beziehe dich auf den Ausgang aus Sicht des KLÄGERS
 """
 
-EXTRACTION_USER_PROMPT = """Analysiere dieses österreichische Zivilurteil und extrahiere die folgenden Informationen als JSON:
+EXTRACTION_USER_PROMPT = """Du analysierst eine OGH- oder OLG-Entscheidung. Extrahiere die Daten des ERSTGERICHTLICHEN Verfahrens als JSON.
+
+WICHTIG:
+- "outcome" = Ergebnis des ERSTGERICHTS (nicht OGH/OLG/Berufungsgericht)
+- "gericht" und "instanz" = das ERSTGERICHT (z.B. BG Wien, LG Graz)
+- Suche im Text nach "Das Erstgericht..." um das erstgerichtliche Ergebnis zu finden
 
 {{
-  "datum": "YYYY-MM-DD oder null",
-  "gericht": "z.B. BG Wien, LG Salzburg oder null (keine richternamen)",
-  "instanz": "BG" oder "LG" oder "OLG" oder "OGH" oder null,
+  "datum": "YYYY-MM-DD des Erstgerichtsurteils oder null",
+  "gericht": "Erstgericht, z.B. BG Wien, LG Salzburg oder null (keine Richternamen)",
+  "instanz": "BG" oder "LG" oder null,
   "streitwert_eur": Zahl als float oder null,
   "streitwert_unbekannt": boolean,
 
@@ -88,19 +95,22 @@ EXTRACTION_USER_PROMPT = """Analysiere dieses österreichische Zivilurteil und e
   "anzahl_verhandlungen": Zahl oder null,
 
   "outcome": 0 oder 1 oder 2,
-  "outcome_beschreibung": "Kurze Beschreibung des Urteilsergebnisses (KEINE Namen)",
-  "zugesprochener_betrag_eur": float oder null,
-  "zugesprochener_anteil_prozent": float zwischen 0 und 100 oder null,
+  "outcome_beschreibung": "Kurze Beschreibung des ERSTGERICHTLICHEN Urteilsergebnisses (KEINE Namen)",
+  "zugesprochener_betrag_eur": float oder null (Erstgericht),
+  "zugesprochener_anteil_prozent": float zwischen 0 und 100 oder null (Erstgericht),
+
+  "erstgericht_tragende_argumente": ["Liste der Argumente, die das Erstgericht für seine Entscheidung als ausschlaggebend erachtete, z.B. 'Verjährungseinrede durchgedrungen', 'Gewährleistungsanspruch bejaht weil Mangel bewiesen'"],
+  "erstgericht_abgewiesene_argumente": ["Liste der Argumente, die das Erstgericht verworfen hat, z.B. 'Irrtumseinrede abgewiesen mangels Beweis', 'Aufrechnung nicht zugelassen'"],
 
   "kostenentscheidung": "Kläger" oder "Beklagter" oder "Geteilt" oder null,
 
   "besonderheiten": ["Besondere rechtliche oder sachliche Besonderheiten des Falles"]
 }}
 
-OUTCOME KODIERUNG:
-- 0 = Kläger UNTERLIEGT vollständig (Klage abgewiesen)
-- 1 = TEILWEISES Obsiegen/Unterliegen (Klage teilweise zugesprochen)
-- 2 = Kläger OBSIEGT vollständig (Klage vollständig zugesprochen)
+OUTCOME KODIERUNG (bezogen auf ERSTGERICHT):
+- 0 = Kläger UNTERLIEGT vollständig beim Erstgericht (Klage abgewiesen)
+- 1 = TEILWEISES Obsiegen/Unterliegen beim Erstgericht (Klage teilweise zugesprochen)
+- 2 = Kläger OBSIEGT vollständig beim Erstgericht (Klage vollständig zugesprochen)
 
 URTEILSTEXT:
 {text}"""
@@ -108,15 +118,18 @@ URTEILSTEXT:
 
 # ─── Text Section Extraction Prompt ─────────────────────────────────────────────
 
-SECTION_EXTRACTION_PROMPT = """Extrahiere aus diesem österreichischen Zivilurteil die folgenden Textabschnitte.
+SECTION_EXTRACTION_PROMPT = """Du analysierst eine OGH- oder OLG-Entscheidung. Extrahiere die folgenden Textabschnitte.
 Gib das Ergebnis als JSON zurück. Wenn ein Abschnitt nicht vorhanden ist, gib einen leeren String zurück.
 Entferne alle Namen von Personen (Richter, Parteien, Anwälte) - ersetze sie mit [KLÄGER], [BEKLAGTER], [RICHTER], [ANWALT].
 
+WICHTIG: Die Abschnitte beziehen sich auf das ERSTGERICHTLICHE Verfahren, wie es in der OGH/OLG-Entscheidung wiedergegeben wird.
+
 {{
-  "klaegervorbringen": "Vollständiger Text des Kläger-Vorbringens (anonymisiert)",
-  "beklagtenvorbringen": "Vollständiger Text des Beklagten-Vorbringens (anonymisiert)",
-  "feststellungen": "Vollständiger Text der Sachverhaltsfeststellungen (anonymisiert)",
-  "beweisw_rdigung": "Vollständiger Text der Beweiswürdigung (anonymisiert)"
+  "klaegervorbringen": "Vollständiger Text des Kläger-Vorbringens vor dem Erstgericht (anonymisiert)",
+  "beklagtenvorbringen": "Vollständiger Text des Beklagten-Vorbringens vor dem Erstgericht (anonymisiert)",
+  "feststellungen": "Vollständiger Text der Sachverhaltsfeststellungen des Erstgerichts (anonymisiert)",
+  "beweisw_rdigung": "Vollständiger Text der Beweiswürdigung des Erstgerichts (anonymisiert)",
+  "erstgericht_begruendung": "Die rechtliche Begründung des Erstgerichts: Warum hat das Erstgericht so entschieden? Welche Argumente waren tragend, welche wurden verworfen? Beginnt typischerweise mit 'Das Erstgericht...' oder 'Rechtlich beurteilte das Erstgericht...' (anonymisiert)"
 }}
 
 URTEILSTEXT:
@@ -127,7 +140,9 @@ URTEILSTEXT:
 # Replaces embeddings: GPT extracts a detailed, schema-conformant JSON
 # covering claims, defenses, and procedural aspects.
 
-LEGAL_ANALYSIS_SYSTEM_PROMPT = """You are an expert Austrian legal AI specialized in civil law (Zivilrecht, ABGB) and civil procedure (Zivilprozessrecht, ZPO). Your task is to analyze the initial court submissions (Vorbringen) of the plaintiff (Kläger) and defendant (Beklagter) from an Austrian civil trial (Erstgericht).
+LEGAL_ANALYSIS_SYSTEM_PROMPT = """You are an expert Austrian legal AI specialized in civil law (Zivilrecht, ABGB) and civil procedure (Zivilprozessrecht, ZPO). You are analyzing OGH/OLG decisions and extracting the ERSTGERICHT-level legal analysis.
+
+Your task: From a higher court decision, extract the claims and defenses as they were presented to the ERSTGERICHT (first instance court). Focus on what was argued before the Erstgericht, not on the appellate arguments.
 
 Extract a highly structured JSON representation of the legal arguments, claims, and defenses. Do not hallucinate. If a specific defense, claim, or concept is not explicitly mentioned or heavily implied by the facts, default to `false` or `null`.
 
@@ -207,9 +222,10 @@ Return ONLY a valid JSON object matching the following exact schema:
   }
 }"""
 
-LEGAL_ANALYSIS_USER_PROMPT = """Analysiere das folgende österreichische Zivilurteil und extrahiere die strukturierte rechtliche Analyse gemäß dem vorgegebenen Schema.
+LEGAL_ANALYSIS_USER_PROMPT = """Analysiere die folgende OGH/OLG-Entscheidung und extrahiere die strukturierte rechtliche Analyse der ERSTGERICHT-Ebene gemäß dem vorgegebenen Schema.
 
 Wichtig:
+- Fokus auf das erstgerichtliche Verfahren: Welche Ansprüche und Einwendungen wurden VOR DEM ERSTGERICHT vorgebracht?
 - Antworte NUR mit validem JSON, kein anderer Text.
 - Setze Boolean-Felder auf false wenn nicht explizit erwähnt oder stark impliziert.
 - Setze String-Felder auf null wenn nicht zutreffend.
@@ -286,9 +302,9 @@ class OpenAIExtractor:
 
         claim_types_str = ", ".join(f'"{c}"' for c in CLAIM_TYPES)
 
-        # Truncate text for extraction (keep first 15000 chars = most relevant)
-        truncated_text = text[:15000]
-        if len(text) > 15000:
+        # OGH/OLG decisions are longer — Erstgericht section is often in the middle
+        truncated_text = text[:25000]
+        if len(text) > 25000:
             truncated_text += f"\n\n[... Text gekürzt, Gesamtlänge: {len(text)} Zeichen]"
 
         prompt = EXTRACTION_USER_PROMPT.format(
@@ -324,14 +340,14 @@ class OpenAIExtractor:
         """
         self._log("Extrahiere Textabschnitte aus Urteil...", 0.4)
 
-        truncated_text = text[:20000]
+        truncated_text = text[:30000]
         prompt = SECTION_EXTRACTION_PROMPT.format(text=truncated_text)
 
         messages = [
             {
                 "role": "system",
-                "content": "Du extrahierst Textabschnitte aus Gerichtsurteilen und gibst JSON zurück."
-                " Anonymisiere alle Personennamen.",
+                "content": "Du extrahierst Textabschnitte aus OGH/OLG-Entscheidungen und gibst JSON zurück."
+                " Fokus auf die Erstgericht-Ebene. Anonymisiere alle Personennamen.",
             },
             {"role": "user", "content": prompt},
         ]
@@ -361,6 +377,7 @@ class OpenAIExtractor:
         beklagtenvorbringen = _to_str(raw_sections.get("beklagtenvorbringen", ""))
         feststellungen = _to_str(raw_sections.get("feststellungen", ""))
         beweisw_rdigung = _to_str(raw_sections.get("beweisw_rdigung", ""))
+        erstgericht_begruendung = _to_str(raw_sections.get("erstgericht_begruendung", ""))
 
         # Step 2: Faktische Beweis-Beschreibung aus Beweiswürdigung + Feststellungen
         self._log("Generiere Beweis-Beschreibung (aufgenommene Beweise)...", 0.5)
@@ -374,6 +391,7 @@ class OpenAIExtractor:
             "beklagtenvorbringen": beklagtenvorbringen,
             "feststellungen": feststellungen,
             "beweisw_rdigung": beweisw_rdigung,
+            "erstgericht_begruendung": erstgericht_begruendung,
             "aufgenommene_beweise": aufgenommene_beweise,
         }
 
@@ -534,6 +552,8 @@ class OpenAIExtractor:
             "outcome_beschreibung": "",
             "zugesprochener_betrag_eur": None,
             "zugesprochener_anteil_prozent": None,
+            "erstgericht_tragende_argumente": [],
+            "erstgericht_abgewiesene_argumente": [],
             "kostenentscheidung": None,
             "besonderheiten": [],
         }
@@ -560,6 +580,11 @@ class OpenAIExtractor:
                 data["streitwert_eur"] = float(data["streitwert_eur"])
             except (TypeError, ValueError):
                 data["streitwert_eur"] = None
+
+        # Ensure Erstgericht argument lists are actually lists
+        for key in ("erstgericht_tragende_argumente", "erstgericht_abgewiesene_argumente"):
+            if not isinstance(data.get(key), list):
+                data[key] = []
 
         return data
 
@@ -759,8 +784,8 @@ class AsyncBatchExtractor:
     ) -> dict:
         """Async version of extract_structured_data."""
         claim_types_str = ", ".join(f'"{c}"' for c in CLAIM_TYPES)
-        truncated_text = text[:15000]
-        if len(text) > 15000:
+        truncated_text = text[:25000]
+        if len(text) > 25000:
             truncated_text += f"\n\n[... Text gekürzt, Gesamtlänge: {len(text)} Zeichen]"
 
         prompt = EXTRACTION_USER_PROMPT.format(
@@ -779,12 +804,12 @@ class AsyncBatchExtractor:
         self, text: str, semaphore: asyncio.Semaphore,
     ) -> dict[str, str]:
         """Async version of extract_text_sections."""
-        truncated_text = text[:20000]
+        truncated_text = text[:30000]
         prompt = SECTION_EXTRACTION_PROMPT.format(text=truncated_text)
         messages = [
             {
                 "role": "system",
-                "content": "Du extrahierst Textabschnitte aus Gerichtsurteilen und gibst JSON zurück."
+                "content": "Du extrahierst Textabschnitte aus OGH/OLG-Entscheidungen und gibst JSON zurück."
                 " Anonymisiere alle Personennamen.",
             },
             {"role": "user", "content": prompt},
@@ -811,6 +836,7 @@ class AsyncBatchExtractor:
         beklagtenvorbringen = _to_str(raw_sections.get("beklagtenvorbringen", ""))
         feststellungen = _to_str(raw_sections.get("feststellungen", ""))
         beweisw_rdigung = _to_str(raw_sections.get("beweisw_rdigung", ""))
+        erstgericht_begruendung = _to_str(raw_sections.get("erstgericht_begruendung", ""))
 
         # Evidence description
         aufgenommene_beweise = await self._extract_evidence_async(
@@ -822,6 +848,7 @@ class AsyncBatchExtractor:
             "beklagtenvorbringen": beklagtenvorbringen,
             "feststellungen": feststellungen,
             "beweisw_rdigung": beweisw_rdigung,
+            "erstgericht_begruendung": erstgericht_begruendung,
             "aufgenommene_beweise": aufgenommene_beweise,
         }
 

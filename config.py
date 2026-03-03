@@ -152,11 +152,13 @@ DEFENSE_LABELS = {
 EMBEDDING_SECTIONS = [
     "klaegervorbringen",
     "beklagtenvorbringen",
+    "erstgericht_begruendung",
 ]
 
 EMBEDDING_SECTION_LABELS = {
     "klaegervorbringen": "Kläger-Vorbringen",
     "beklagtenvorbringen": "Beklagten-Vorbringen",
+    "erstgericht_begruendung": "Erstgericht-Begründung",
 }
 
 # ─── Structured Legal Analysis Schema ────────────────────────────────────────────
@@ -247,6 +249,7 @@ SECTION_LABELS = {
     "beklagtenvorbringen": "Beklagten-Vorbringen",
     "feststellungen": "Feststellungen",
     "beweisw_rdigung": "Beweiswürdigung",
+    "erstgericht_begruendung": "Erstgericht-Begründung",
     "aufgenommene_beweise": "Aufgenommene Beweise",
 }
 
@@ -257,10 +260,10 @@ SECTION_LABELS = {
 # is encoded to 64-dim and concatenated with structured features for fusion.
 #
 # Parameteranzahl ca.:
-#   2 × EmbeddingEncoder (128→64→64):    ~22 K
+#   3 × EmbeddingEncoder (128→64→64):    ~33 K  (kläger + beklagter + erstgericht_begruendung)
 #   StructuredEncoder (struct→32):        ~3 K
-#   Fusion (160→64→3):                    ~11 K
-#   Gesamt: ~36 K
+#   Fusion (224→64→2):                    ~15 K
+#   Gesamt: ~51 K
 NN_CONFIG = {
     "embedding_hidden_dim": 64,      # Intermediate dim per embedding encoder
     "embedding_output_dim": 64,      # Output dim per embedding encoder

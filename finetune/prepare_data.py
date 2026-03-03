@@ -46,6 +46,7 @@ from loguru import logger
 # Default input: ../data/extracted/cases_dataset.json (relative to this script)
 _SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_INPUT = _SCRIPT_DIR.parent / "data" / "extracted" / "cases_dataset.json"
+DEFAULT_OUTPUT = _SCRIPT_DIR.parent / "data" / "prepared_dataset"
 
 # ---------------------------------------------------------------------------
 # Outcome-Mapping (numerisch ↔ Text)
@@ -229,8 +230,8 @@ def main():
     parser.add_argument(
         "--output", "-o",
         type=Path,
-        default=Path("data/prepared_dataset"),
-        help="Ausgabeverzeichnis für das HF-Dataset (default: data/prepared_dataset)",
+        default=DEFAULT_OUTPUT,
+        help=f"Ausgabeverzeichnis für das HF-Dataset (default: {DEFAULT_OUTPUT})",
     )
     parser.add_argument(
         "--val-ratio",

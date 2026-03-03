@@ -15,12 +15,14 @@ Verwendung:
 """
 
 import argparse
+import gc
 import json
+import sys
 from pathlib import Path
 
 import torch
 from loguru import logger
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from prepare_data import SYSTEM_PROMPT, build_user_prompt
 
@@ -33,50 +35,99 @@ OUTCOME_LABELS = ["OBSIEGEN", "TEILWEISE", "UNTERLIEGEN"]
 
 
 # ---------------------------------------------------------------------------
+# bitsandbytes-Diagnose
+# ---------------------------------------------------------------------------
+def check_bnb_available() -> bool:
+    """Prueft ob bitsandbytes CUDA-Quantisierung tatsaechlich funktioniert."""
+    try:
+        import bitsandbytes as bnb
+        # Teste ob die CUDA-Kernels geladen werden koennen
+        bnb.functional.get_ptr(None)
+        logger.success(f"bitsandbytes {bnb.__version__} — CUDA OK")
+        return True
+    except Exception as e:
+        logger.warning(f"bitsandbytes CUDA nicht verfuegbar: {e}")
+        logger.warning(
+            "4-bit Quantisierung funktioniert NICHT. "
+            "Bekanntes Problem auf Windows + Python 3.13."
+        )
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Modell laden (OHNE LoRA-Adapter)
 # ---------------------------------------------------------------------------
 def load_base_model(model_name: str):
-    """Lädt das Basis-Modell mit 4-bit Quantisierung (ohne Adapter)."""
+    """Laedt das Basis-Modell. Versucht 4-bit, faellt auf GPU+CPU-Split zurueck."""
     logger.info(f"Lade Basis-Modell: {model_name}")
 
-    # GPU-Speicher freigeben, falls von einem vorherigen Lauf belegt
-    import gc
     gc.collect()
     torch.cuda.empty_cache()
 
     free_mem = torch.cuda.mem_get_info()[0] / 1024**3
     total_mem = torch.cuda.mem_get_info()[1] / 1024**3
     logger.info(f"GPU-Speicher: {free_mem:.1f} GiB frei / {total_mem:.1f} GiB gesamt")
-    if free_mem < 6.0:
-        logger.warning(
-            f"Nur {free_mem:.1f} GiB frei — andere Python-Prozesse beenden! "
-            f"(taskkill /F /IM python.exe oder Task-Manager)"
-        )
-
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.float16,
-        bnb_4bit_use_double_quant=True,
-    )
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        quantization_config=bnb_config,
-        device_map="auto",
-        torch_dtype=torch.float16,
-        low_cpu_mem_usage=True,
-        trust_remote_code=True,
-        max_memory={0: "14GiB", "cpu": "24GiB"},
-    )
+    bnb_works = check_bnb_available()
+
+    if bnb_works:
+        # ---- Weg 1: echte 4-bit Quantisierung (~4 GiB VRAM) ----
+        logger.info("Lade mit 4-bit Quantisierung (bitsandbytes)...")
+        from transformers import BitsAndBytesConfig
+
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True,
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            quantization_config=bnb_config,
+            device_map="auto",
+            torch_dtype=torch.float16,
+            low_cpu_mem_usage=True,
+            trust_remote_code=True,
+        )
+    else:
+        # ---- Weg 2: float16 mit GPU+CPU-Split ----
+        # Mistral-7B float16 = ~14 GiB. Wir packen so viel wie moeglich
+        # auf die GPU und den Rest auf die CPU. Langsamer, aber funktioniert.
+        gpu_budget = max(0, int(free_mem) - 2)  # 2 GiB Puffer
+        if gpu_budget < 2:
+            logger.error(
+                f"Nur {free_mem:.1f} GiB frei auf GPU und bitsandbytes "
+                f"funktioniert nicht. Bitte andere Prozesse beenden oder "
+                f"bitsandbytes reparieren (siehe unten)."
+            )
+            print("\n  FIX: pip install bitsandbytes>=0.45.0")
+            print("  Wenn das nicht hilft: Python 3.11 statt 3.13 verwenden.\n")
+            raise SystemExit(1)
+
+        logger.info(
+            f"Lade in float16 mit GPU+CPU-Split "
+            f"(GPU: {gpu_budget} GiB, Rest: CPU-RAM). "
+            f"Langsamer als 4-bit, aber funktioniert."
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            device_map="auto",
+            torch_dtype=torch.float16,
+            low_cpu_mem_usage=True,
+            trust_remote_code=True,
+            max_memory={0: f"{gpu_budget}GiB", "cpu": "24GiB"},
+        )
+
     model.eval()
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    logger.success("Basis-Modell geladen und bereit.")
+    # Speicher-Check nach dem Laden
+    alloc = torch.cuda.memory_allocated() / 1024**3
+    logger.success(f"Modell geladen. GPU-Nutzung: {alloc:.1f} GiB")
     return model, tokenizer
 
 

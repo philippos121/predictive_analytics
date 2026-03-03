@@ -54,14 +54,32 @@ class EmbeddingEncoder(nn.Module):
 
 
 class StructuredEncoder(nn.Module):
-    """Encodes structured legal features (streitwert, claim type, defenses, etc.)."""
+    """Encodes structured legal features (streitwert, claim type, defenses, etc.).
+
+    Optionally applies court-derived attention weights: element-wise scaling
+    of input features BEFORE the linear layer. This gives the model a prior
+    from erstgericht_begruendung analysis — features that courts frequently
+    rely on start with higher weight.
+
+    The attention vector is a learnable Parameter initialized from the
+    relevance analysis, so the model can still adjust during training.
+    """
 
     def __init__(
         self,
         input_dim: int,
         hidden_dim: int = NN_CONFIG["structured_hidden_dim"],
+        attention_init: "torch.Tensor | None" = None,
     ):
         super().__init__()
+
+        # Court-derived feature attention (learnable, initialized from relevance)
+        if attention_init is not None:
+            self.feature_attention = nn.Parameter(attention_init.clone())
+        else:
+            # No relevance data → uniform weights (no-op multiply)
+            self.feature_attention = nn.Parameter(torch.ones(input_dim))
+
         self.encoder = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -70,6 +88,8 @@ class StructuredEncoder(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Apply learned attention before encoding
+        x = x * self.feature_attention
         return self.encoder(x)
 
 
@@ -83,7 +103,12 @@ class LitigationClassifier(nn.Module):
     - Fusion MLP → 3-class output (0=loss, 1=partial, 2=win)
     """
 
-    def __init__(self, structured_dim: int, config: dict = NN_CONFIG):
+    def __init__(
+        self,
+        structured_dim: int,
+        config: dict = NN_CONFIG,
+        structured_attention_init: "torch.Tensor | None" = None,
+    ):
         super().__init__()
 
         self.config = config
@@ -107,10 +132,11 @@ class LitigationClassifier(nn.Module):
             for _ in range(n_sections)
         ])
 
-        # Structured feature encoder
+        # Structured feature encoder (with optional court-derived attention)
         self.structured_encoder = StructuredEncoder(
             input_dim=structured_dim,
             hidden_dim=struct_hidden_dim,
+            attention_init=structured_attention_init,
         )
 
         # Fusion network

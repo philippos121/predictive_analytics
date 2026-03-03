@@ -116,8 +116,28 @@ class LitigationTrainer:
         return train_ds, val_ds, full_ds, feature_dim
 
     def build_model(self, structured_dim: int) -> LitigationClassifier:
-        """Initialize the neural network."""
-        model = LitigationClassifier(structured_dim=structured_dim)
+        """Initialize the neural network.
+
+        If court-derived feature relevance weights are available
+        (from analysis/feature_relevance.py), they are used to initialize
+        the StructuredEncoder's attention vector — giving the model a prior
+        on which features courts typically rely on.
+        """
+        # Build attention weights from feature relevance analysis (if available)
+        attention_init = None
+        attention_weights = self.feature_engineer.build_attention_weights()
+        if attention_weights is not None:
+            attention_init = torch.tensor(attention_weights, dtype=torch.float32)
+            self.progress_callback(
+                msg="Feature-Attention aus Erstgericht-Analyse geladen.",
+                epoch=0, epochs=0, train_loss=0, val_loss=0,
+                train_acc=0, val_acc=0,
+            )
+
+        model = LitigationClassifier(
+            structured_dim=structured_dim,
+            structured_attention_init=attention_init,
+        )
         model = model.to(self.device)
         self.model = model
         return model

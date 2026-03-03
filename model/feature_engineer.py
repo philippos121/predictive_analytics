@@ -10,6 +10,7 @@ Handles:
 - Feature normalization
 """
 
+import json
 import math
 import pickle
 import sys
@@ -27,6 +28,7 @@ from config import (
     DEFENSE_TYPES,
     EMBEDDING_DIM_USED,
     EMBEDDING_SECTIONS,
+    FEATURE_RELEVANCE_FILE,
     LEGAL_ANALYSIS_BOOL_FIELDS,
     LEGAL_ANALYSIS_LIST_FIELDS,
     NUM_CLASSES,
@@ -168,6 +170,54 @@ class FeatureEngineer:
             raise RuntimeError("FeatureEngineer not fitted.")
         x = self.encode_case(case)
         return self.scaler.transform(x.reshape(1, -1))[0]
+
+    def build_attention_weights(
+        self,
+        relevance_path: Path = FEATURE_RELEVANCE_FILE,
+    ) -> Optional[np.ndarray]:
+        """
+        Build a per-feature attention weight vector from court-derived relevance data.
+
+        Returns shape (feature_dim,) with weights >=0.5 for all features.
+        Non-legal-analysis features (streitwert, claim_type, etc.) get weight 1.0.
+        Legal-analysis boolean features get their court-derived weight.
+        Returns None if the relevance file doesn't exist.
+        """
+        if not relevance_path.exists():
+            return None
+
+        with open(relevance_path, "r") as f:
+            data = json.load(f)
+
+        attention_weights_map = data.get("attention_weights", {})
+        if not attention_weights_map:
+            return None
+
+        dim = self.feature_dim
+        weights = np.ones(dim, dtype=np.float32)
+
+        # Compute offset to the legal_analysis bool section
+        offset = 0
+        offset += 1                          # log_streitwert
+        offset += len(CLAIM_TYPES) + 1       # claim_type one-hot
+        offset += len(DEFENSE_TYPES)         # defense flags
+        offset += 1                          # klaeger_beweismittel
+        offset += 1                          # beklagter_beweismittel
+        offset += 1                          # anspruchsgruende count
+        offset += len(self.INSTANZ_CLASSES)  # court level one-hot
+        offset += 1                          # sachverstaendiger
+
+        # Fill in legal_analysis bool weights (same order as encode_case)
+        idx = offset
+        for section, fields in LEGAL_ANALYSIS_BOOL_FIELDS.items():
+            for field in fields:
+                if field in attention_weights_map:
+                    weights[idx] = attention_weights_map[field]
+                idx += 1
+
+        # List count features keep weight 1.0 (already at default)
+
+        return weights
 
     def save(self, path: Path = SCALER_FILE) -> None:
         """Persist the fitted scaler."""

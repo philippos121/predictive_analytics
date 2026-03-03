@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import (
     CLAIM_TYPES,
     DEFENSE_TYPES,
+    LEGAL_ANALYSIS_BOOL_FIELDS,
     OPENAI_EXTRACTION_MODEL,
     OPENAI_REQUEST_DELAY_SEC,
 )
@@ -281,6 +282,68 @@ FESTSTELLUNGEN:
 {feststellungen}"""
 
 
+# ─── Feature Relevance Extraction Prompt ──────────────────────────────────────
+# Used OFFLINE to learn which structured features courts rely on.
+# Input: erstgericht_begruendung text.
+# Output: which of our bool fields were decisive + schema gaps.
+# This is NOT used at prediction time — it's a meta-learning step for
+# feature importance weighting and schema improvement.
+
+
+def _build_feature_relevance_prompt(erstgericht_begruendung: str) -> tuple[str, str]:
+    """Build system + user prompts for feature relevance extraction.
+
+    Returns (system_prompt, user_prompt).
+    Generated at runtime so the field list stays in sync with config.
+    """
+    # Build field list from the live schema
+    field_lines = []
+    flat_fields = []
+    for section, fields in LEGAL_ANALYSIS_BOOL_FIELDS.items():
+        for field in fields:
+            flat_fields.append(field)
+            field_lines.append(f"  - {section}.{field}")
+    fields_block = "\n".join(field_lines)
+
+    system_prompt = f"""Du bist ein Experte für österreichisches Zivilrecht.
+Du analysierst die rechtliche Begründung eines Erstgerichts und identifizierst,
+welche der folgenden vordefinierten Merkmale das Gericht in seiner Begründung
+TATSÄCHLICH BESPROCHEN oder als entscheidungsrelevant behandelt hat.
+
+Vordefinierte Merkmale (Boolean-Felder unseres Schemas):
+{fields_block}
+
+REGELN:
+- Setze ein Merkmal NUR auf die Liste, wenn das Gericht es EXPLIZIT bespricht
+  oder sein Fehlen/Vorliegen als entscheidungsrelevant behandelt.
+- "Entscheidungsrelevant" heißt: das Gericht hat den Punkt in seiner Begründung
+  substantiell erörtert, nicht nur am Rande erwähnt.
+- Identifiziere außerdem rechtliche Konzepte, die das Gericht substantiell
+  behandelt hat, die aber in KEINEM der obigen Merkmale abgebildet sind.
+  Das sind Lücken in unserem Schema.
+
+Antworte ausschließlich mit validem JSON."""
+
+    user_prompt = f"""Analysiere die folgende Erstgericht-Begründung und identifiziere:
+1. Welche der vordefinierten Merkmale das Gericht tatsächlich als entscheidungsrelevant
+   behandelt hat (Feldnamen EXAKT wie oben, ohne section-Prefix).
+2. Rechtliche Konzepte, die das Gericht substantiell erörtert hat, die aber
+   in keinem unserer Merkmale erfasst sind (Schema-Lücken).
+
+Antworte mit folgendem JSON:
+{{
+  "entscheidungsrelevante_merkmale": ["feldname1", "feldname2", ...],
+  "nicht_erfasste_konzepte": [
+    {{"konzept": "Name des Konzepts", "beschreibung": "Kurze Beschreibung, warum das Gericht es für relevant hielt"}}
+  ]
+}}
+
+ERSTGERICHT-BEGRÜNDUNG:
+{erstgericht_begruendung}"""
+
+    return system_prompt, user_prompt
+
+
 class OpenAIExtractor:
     """
     Handles all OpenAI API interactions for legal text extraction.
@@ -487,6 +550,48 @@ class OpenAIExtractor:
             )
 
         return self._validate_legal_analysis(data)
+
+    def extract_feature_relevance(self, erstgericht_begruendung: str) -> dict:
+        """
+        Identify which structured features the court relied on in its reasoning.
+
+        This is an OFFLINE meta-learning step — NOT used at prediction time.
+        Reads erstgericht_begruendung and returns:
+        - entscheidungsrelevante_merkmale: list of bool field names the court relied on
+        - nicht_erfasste_konzepte: legal concepts not in our schema (gaps)
+        """
+        if not erstgericht_begruendung or not erstgericht_begruendung.strip():
+            return {"entscheidungsrelevante_merkmale": [], "nicht_erfasste_konzepte": []}
+
+        system_prompt, user_prompt = _build_feature_relevance_prompt(
+            erstgericht_begruendung[:15000]
+        )
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        raw = self._chat_completion(messages)
+        time.sleep(OPENAI_REQUEST_DELAY_SEC)
+
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"entscheidungsrelevante_merkmale": [], "nicht_erfasste_konzepte": []}
+
+        # Validate: only keep field names that actually exist in our schema
+        all_fields = set()
+        for fields in LEGAL_ANALYSIS_BOOL_FIELDS.values():
+            all_fields.update(fields)
+
+        valid_merkmale = [
+            f for f in data.get("entscheidungsrelevante_merkmale", [])
+            if f in all_fields
+        ]
+        data["entscheidungsrelevante_merkmale"] = valid_merkmale
+
+        return data
 
     def embed_sections(self, sections: dict[str, str]) -> dict[str, list[float]]:
         """
@@ -931,6 +1036,81 @@ class AsyncBatchExtractor:
         raw = await self._async_chat_completion(messages, semaphore)
         data = json.loads(raw)
         return self._sync._validate_legal_analysis(data)
+
+    async def _extract_feature_relevance_async(
+        self, erstgericht_begruendung: str, semaphore: asyncio.Semaphore,
+    ) -> dict:
+        """Async version of extract_feature_relevance."""
+        if not erstgericht_begruendung or not erstgericht_begruendung.strip():
+            return {"entscheidungsrelevante_merkmale": [], "nicht_erfasste_konzepte": []}
+
+        system_prompt, user_prompt = _build_feature_relevance_prompt(
+            erstgericht_begruendung[:15000]
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        raw = await self._async_chat_completion(messages, semaphore)
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"entscheidungsrelevante_merkmale": [], "nicht_erfasste_konzepte": []}
+
+        all_fields = set()
+        for fields in LEGAL_ANALYSIS_BOOL_FIELDS.values():
+            all_fields.update(fields)
+        data["entscheidungsrelevante_merkmale"] = [
+            f for f in data.get("entscheidungsrelevante_merkmale", [])
+            if f in all_fields
+        ]
+        return data
+
+    async def extract_feature_relevance_batch(
+        self, cases: list[dict],
+    ) -> tuple[dict[str, dict], list[str]]:
+        """
+        Extract feature relevance for all cases that have erstgericht_begruendung.
+
+        Returns:
+            (relevance_by_case_id, errors)
+        """
+        eligible = [
+            (i, c) for i, c in enumerate(cases)
+            if c.get("sections", {}).get("erstgericht_begruendung", "").strip()
+        ]
+        total = len(eligible)
+        if total == 0:
+            return {}, []
+
+        self._done_counter = 0
+        semaphore = asyncio.Semaphore(self.max_concurrent)
+        relevance_results: dict[str, dict] = {}
+        errors: list[str] = []
+
+        async def _process(idx: int, case: dict) -> None:
+            case_id = case.get("case_id", f"idx_{idx}")
+            try:
+                text = case["sections"]["erstgericht_begruendung"]
+                result = await self._extract_feature_relevance_async(text, semaphore)
+                relevance_results[case_id] = result
+                self._done_counter += 1
+                self.progress_callback(
+                    self._done_counter, total,
+                    f"[{self._done_counter}/{total}] {case_id} OK"
+                )
+            except Exception as e:
+                self._done_counter += 1
+                errors.append(f"{case_id}: {e}")
+                self.progress_callback(
+                    self._done_counter, total,
+                    f"[{self._done_counter}/{total}] {case_id} FEHLER: {e}"
+                )
+
+        tasks = [_process(i, c) for i, c in eligible]
+        await asyncio.gather(*tasks)
+
+        return relevance_results, errors
 
     async def _process_single_case(
         self,

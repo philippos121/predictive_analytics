@@ -27,6 +27,7 @@ PCA_FILE = MODELS_DIR / "embedding_pca.pkl"
 ENCODER_FILE = MODELS_DIR / "label_encoders.pkl"
 TRAINING_HISTORY_FILE = MODELS_DIR / "training_history.json"
 KNN_FILE = MODELS_DIR / "litigation_knn.pkl"
+FEATURE_RELEVANCE_FILE = MODELS_DIR / "feature_relevance.json"
 
 # ─── Adaptive Model Selection ────────────────────────────────────────────────────
 # Below KNN_THRESHOLD labeled cases → k-Nearest-Neighbour (structured features)

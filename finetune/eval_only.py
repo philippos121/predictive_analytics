@@ -94,6 +94,9 @@ def main():
                 break
         y_pred.append(pred_label)
 
+        if i < 5 or pred_label == "UNBEKANNT" and i < 20:
+            logger.debug(f"Sample {i}: true={true_label} | raw_prediction='{prediction}' | pred_label={pred_label}")
+
         if (i + 1) % 50 == 0:
             logger.info(f"  {i + 1}/{len(val_ds)} Samples ausgewertet...")
 

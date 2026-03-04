@@ -59,7 +59,7 @@ def main():
     # Load validation split
     logger.info(f"Lade Dataset von {args.dataset}")
     ds = load_from_disk(args.dataset)
-    val_ds = ds["val"]
+    val_ds = ds["validation"]
     logger.info(f"Validation-Samples: {len(val_ds)}")
 
     # Run classification eval

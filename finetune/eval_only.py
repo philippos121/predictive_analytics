@@ -13,6 +13,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 MAX_SEQ_LEN = 1024
 LABEL_CLASSES = ["OBSIEGEN", "UNTERLIEGEN"]
+# Map legacy 3-class labels to binary (TEILWEISE → UNTERLIEGEN)
+LABEL_ALIAS = {"TEILWEISE": "UNTERLIEGEN"}
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
@@ -70,7 +72,8 @@ def main():
 
     for i, sample in enumerate(val_ds):
         messages = sample["messages"]
-        true_label = messages[-1]["content"].strip()
+        true_label_raw = messages[-1]["content"].strip()
+        true_label = LABEL_ALIAS.get(true_label_raw, true_label_raw)
         y_true.append(true_label)
 
         input_messages = messages[:-1]
@@ -89,18 +92,24 @@ def main():
 
         pred_upper = prediction.upper().strip()
         pred_label = "UNBEKANNT"
-        # Try exact match first, then substring match
+        # Apply alias first (e.g. TEILWEISE → UNTERLIEGEN)
+        pred_upper = LABEL_ALIAS.get(pred_upper, pred_upper)
+        # Try exact match first, then startsWith, then substring match
         if pred_upper in LABEL_CLASSES:
             pred_label = pred_upper
         elif pred_upper.startswith("OBSIEGEN"):
             pred_label = "OBSIEGEN"
         elif pred_upper.startswith("UNTERLIEGEN"):
             pred_label = "UNTERLIEGEN"
+        elif pred_upper.startswith("TEILWEISE"):
+            pred_label = LABEL_ALIAS.get("TEILWEISE", "UNBEKANNT")
         else:
             for label in LABEL_CLASSES:
                 if label in pred_upper:
                     pred_label = label
                     break
+            if pred_label == "UNBEKANNT" and "TEILWEISE" in pred_upper:
+                pred_label = LABEL_ALIAS.get("TEILWEISE", "UNBEKANNT")
         y_pred.append(pred_label)
 
         if i < 10 or (pred_label == "UNBEKANNT" and i < 30):

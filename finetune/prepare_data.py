@@ -29,9 +29,10 @@ Unterstützte Eingabeformate:
     ...
 ]
 
-Outcome-Mapping:  0 / "unterliegen" → UNTERLIEGEN
-                  1 / "teilweise"   → TEILWEISE
-                  2 / "obsiegen"    → OBSIEGEN
+Outcome-Mapping (binär):
+  0 / "unterliegen" → UNTERLIEGEN
+  1 / "teilweise"   → UNTERLIEGEN   (wird zu UNTERLIEGEN zusammengefasst)
+  2 / "obsiegen"    → OBSIEGEN
 
 Ausgabe: Hugging-Face-Dataset im Chat-Format, gespeichert auf Festplatte.
 """

@@ -1,4 +1,9 @@
-"""Standalone classification evaluation on a saved LoRA adapter."""
+"""Standalone logit-based classification evaluation on a saved LoRA adapter.
+
+Instead of generating free text and parsing labels, this script compares the
+model's next-token probabilities for OBSIEGEN vs UNTERLIEGEN directly.
+This eliminates garbled/unparseable outputs entirely.
+"""
 
 import argparse
 import json
@@ -59,6 +64,13 @@ def main():
     model = PeftModel.from_pretrained(model, args.adapter)
     model.eval()
 
+    # Determine token IDs for each label's first token
+    label_token_ids = {}
+    for label in LABEL_CLASSES:
+        ids = tokenizer.encode(label, add_special_tokens=False)
+        label_token_ids[label] = ids[0]
+    logger.info(f"Label-Token-IDs: { {l: t for l, t in label_token_ids.items()} }")
+
     # Load validation split
     logger.info(f"Lade Dataset von {args.dataset}")
     ds = load_from_disk(args.dataset)
@@ -67,8 +79,8 @@ def main():
         val_ds = val_ds.select(range(min(args.max_samples, len(val_ds))))
     logger.info(f"Validation-Samples: {len(val_ds)}")
 
-    # Run classification eval
-    y_true, y_pred = [], []
+    # Run logit-based classification
+    y_true, y_pred, y_probs = [], [], []
 
     for i, sample in enumerate(val_ds):
         messages = sample["messages"]
@@ -84,44 +96,29 @@ def main():
                            max_length=MAX_SEQ_LEN).to(model.device)
 
         with torch.no_grad():
-            output_ids = model.generate(**inputs, max_new_tokens=20, do_sample=False,
-                                              pad_token_id=tokenizer.eos_token_id)
+            outputs = model(**inputs)
+            last_logits = outputs.logits[0, -1, :]
 
-        generated_ids = output_ids[0][inputs["input_ids"].shape[1]:]
-        prediction = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+        # Softmax over only the two label tokens
+        label_ids = torch.tensor([label_token_ids[l] for l in LABEL_CLASSES],
+                                 device=last_logits.device)
+        label_logits = last_logits[label_ids]
+        probs = torch.softmax(label_logits, dim=0)
 
-        pred_upper = prediction.upper().strip()
-        pred_label = "UNBEKANNT"
-        # Apply alias first (e.g. TEILWEISE → UNTERLIEGEN)
-        pred_upper = LABEL_ALIAS.get(pred_upper, pred_upper)
-        # Try exact match first, then startsWith, then substring match
-        if pred_upper in LABEL_CLASSES:
-            pred_label = pred_upper
-        elif pred_upper.startswith("OBSIEGEN"):
-            pred_label = "OBSIEGEN"
-        elif pred_upper.startswith("UNTERLIEGEN"):
-            pred_label = "UNTERLIEGEN"
-        elif pred_upper.startswith("TEILWEISE"):
-            pred_label = LABEL_ALIAS.get("TEILWEISE", "UNBEKANNT")
-        else:
-            for label in LABEL_CLASSES:
-                if label in pred_upper:
-                    pred_label = label
-                    break
-            if pred_label == "UNBEKANNT" and "TEILWEISE" in pred_upper:
-                pred_label = LABEL_ALIAS.get("TEILWEISE", "UNBEKANNT")
+        pred_idx = probs.argmax().item()
+        pred_label = LABEL_CLASSES[pred_idx]
+        prob_dict = {l: round(p.item(), 4) for l, p in zip(LABEL_CLASSES, probs)}
+
         y_pred.append(pred_label)
+        y_probs.append(prob_dict)
 
-        if i < 10 or (pred_label == "UNBEKANNT" and i < 30):
-            logger.info(f"Sample {i}: true={true_label} | raw='{prediction[:120]}' | pred={pred_label}")
+        if i < 10:
+            logger.info(f"Sample {i}: true={true_label} | pred={pred_label} | probs={prob_dict}")
 
         if (i + 1) % 50 == 0:
             logger.info(f"  {i + 1}/{len(val_ds)} Samples ausgewertet...")
 
     # Metrics
-    n_unknown = y_pred.count("UNBEKANNT")
-    if n_unknown > 0:
-        logger.warning(f"{n_unknown}/{len(y_pred)} Vorhersagen konnten keinem Label zugeordnet werden (UNBEKANNT)!")
     acc = accuracy_score(y_true, y_pred)
     logger.info(f"Accuracy: {acc:.4f} ({sum(1 for a, b in zip(y_true, y_pred) if a == b)}/{len(y_true)})")
 
@@ -145,7 +142,7 @@ def main():
         "confusion_matrix": cm.tolist(),
         "labels": LABEL_CLASSES,
         "num_samples": len(y_true),
-        "num_unknown": y_pred.count("UNBEKANNT"),
+        "method": "logit-based",
     }
 
     results_path = Path(output_dir) / "eval_classification.json"

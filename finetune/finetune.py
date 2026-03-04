@@ -190,12 +190,20 @@ def get_training_args(output_dir: str, num_train_samples: int) -> SFTConfig:
 # Klassifikations-Evaluation (Accuracy, F1, Confusion Matrix)
 # ---------------------------------------------------------------------------
 def evaluate_classification(model, tokenizer, val_ds, output_dir: str):
-    """Generiert Vorhersagen auf dem Validierungs-Set und berechnet Metriken."""
-    logger.info("=== Klassifikations-Evaluation ===")
+    """Logit-basierte Klassifikation: vergleicht P(OBSIEGEN) vs P(UNTERLIEGEN)."""
+    logger.info("=== Klassifikations-Evaluation (logit-basiert) ===")
 
     model.eval()
     y_true = []
     y_pred = []
+    y_probs = []
+
+    # Token-IDs für die Label-Anfänge ermitteln
+    label_token_ids = {}
+    for label in LABEL_CLASSES:
+        ids = tokenizer.encode(label, add_special_tokens=False)
+        label_token_ids[label] = ids[0]  # Erstes Token reicht zur Unterscheidung
+    logger.info(f"Label-Token-IDs: { {l: t for l, t in label_token_ids.items()} }")
 
     for i, sample in enumerate(val_ds):
         messages = sample["messages"]
@@ -213,24 +221,25 @@ def evaluate_classification(model, tokenizer, val_ds, output_dir: str):
                            max_length=MAX_SEQ_LEN).to(model.device)
 
         with torch.no_grad():
-            output_ids = model.generate(
-                **inputs,
-                max_new_tokens=20,
-                do_sample=False,
-                temperature=1.0,
-            )
+            outputs = model(**inputs)
+            # Logits des letzten Tokens = Vorhersage fürs nächste Token
+            last_logits = outputs.logits[0, -1, :]
 
-        # Nur die generierten Tokens dekodieren
-        generated_ids = output_ids[0][inputs["input_ids"].shape[1]:]
-        prediction = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+        # Softmax nur über die beiden Label-Tokens
+        label_ids = torch.tensor([label_token_ids[l] for l in LABEL_CLASSES],
+                                 device=last_logits.device)
+        label_logits = last_logits[label_ids]
+        probs = torch.softmax(label_logits, dim=0)
 
-        # Label aus der Antwort extrahieren (erstes Wort matchen)
-        pred_label = "UNBEKANNT"
-        for label in LABEL_CLASSES:
-            if label in prediction.upper():
-                pred_label = label
-                break
+        pred_idx = probs.argmax().item()
+        pred_label = LABEL_CLASSES[pred_idx]
+        prob_dict = {l: round(p.item(), 4) for l, p in zip(LABEL_CLASSES, probs)}
+
         y_pred.append(pred_label)
+        y_probs.append(prob_dict)
+
+        if i < 5:
+            logger.info(f"Sample {i}: true={true_label} | pred={pred_label} | probs={prob_dict}")
 
         if (i + 1) % 50 == 0:
             logger.info(f"  {i + 1}/{len(val_ds)} Samples ausgewertet...")
@@ -269,7 +278,7 @@ def evaluate_classification(model, tokenizer, val_ds, output_dir: str):
         "confusion_matrix": cm.tolist(),
         "labels": LABEL_CLASSES,
         "num_samples": len(y_true),
-        "num_unknown": y_pred.count("UNBEKANNT"),
+        "method": "logit-based",
     }
 
     results_path = Path(output_dir) / "eval_classification.json"

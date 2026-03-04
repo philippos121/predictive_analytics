@@ -39,6 +39,7 @@ Ausgabe: Hugging-Face-Dataset im Chat-Format, gespeichert auf Festplatte.
 
 import json
 import argparse
+import random
 from pathlib import Path
 
 from datasets import Dataset, DatasetDict
@@ -181,14 +182,64 @@ def load_and_validate(json_path: Path) -> list[dict]:
     return valid
 
 
+def _balance_entries(
+    entries: list[dict],
+    max_samples: int | None,
+    seed: int,
+) -> list[dict]:
+    """
+    Erstellt ein balanciertes Dataset mit gleich vielen OBSIEGEN und UNTERLIEGEN.
+
+    Wenn max_samples angegeben ist, werden max_samples/2 pro Klasse ausgewählt.
+    Wenn eine Klasse weniger Einträge hat, bestimmt diese das Maximum pro Klasse.
+    Keine Daten werden gelöscht — es wird nur eine Auswahl getroffen.
+    """
+    rng = random.Random(seed)
+
+    # Nach Klasse aufteilen
+    by_class: dict[str, list[dict]] = {"OBSIEGEN": [], "UNTERLIEGEN": []}
+    for e in entries:
+        label = build_assistant_response(e["outcome"])
+        by_class[label].append(e)
+
+    n_obsiegen = len(by_class["OBSIEGEN"])
+    n_unterliegen = len(by_class["UNTERLIEGEN"])
+    logger.info(
+        f"Verfügbar: OBSIEGEN={n_obsiegen} | UNTERLIEGEN={n_unterliegen} "
+        f"(gesamt: {n_obsiegen + n_unterliegen})"
+    )
+
+    if max_samples is not None:
+        per_class = max_samples // 2
+    else:
+        # Kein Limit → balance auf die kleinere Klasse
+        per_class = min(n_obsiegen, n_unterliegen)
+
+    # Auf tatsächlich verfügbare Anzahl begrenzen
+    per_class = min(per_class, n_obsiegen, n_unterliegen)
+
+    logger.info(f"Balancierte Auswahl: {per_class} pro Klasse ({per_class * 2} gesamt)")
+
+    selected = (
+        rng.sample(by_class["OBSIEGEN"], per_class)
+        + rng.sample(by_class["UNTERLIEGEN"], per_class)
+    )
+    rng.shuffle(selected)
+    return selected
+
+
 def create_dataset(
     json_path: Path,
     output_dir: Path,
     val_ratio: float = 0.1,
     seed: int = 42,
+    max_samples: int | None = None,
 ) -> DatasetDict:
     """Erstellt ein train/validation DatasetDict und speichert es."""
     entries = load_and_validate(json_path)
+
+    # Balancierte Auswahl
+    entries = _balance_entries(entries, max_samples, seed)
 
     # In Chat-Format konvertieren
     formatted = [format_as_chat(e) for e in entries]
@@ -245,9 +296,19 @@ def main():
         default=42,
         help="Random-Seed für die Aufteilung (default: 42)",
     )
+    parser.add_argument(
+        "--max-samples", "-n",
+        type=int,
+        default=None,
+        help=(
+            "Maximale Gesamtanzahl der Trainingsbeispiele (balanciert 50/50). "
+            "z.B. --max-samples 1000 → 500 OBSIEGEN + 500 UNTERLIEGEN. "
+            "Ohne Angabe: Balance auf die kleinere Klasse."
+        ),
+    )
     args = parser.parse_args()
 
-    create_dataset(args.input, args.output, args.val_ratio, args.seed)
+    create_dataset(args.input, args.output, args.val_ratio, args.seed, args.max_samples)
 
 
 if __name__ == "__main__":

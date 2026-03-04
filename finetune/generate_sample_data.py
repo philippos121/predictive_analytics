@@ -166,12 +166,8 @@ def generate_case() -> dict:
         mitverschulden_grund=mitverschulden_grund,
     )
 
-    # Outcome — binäre Klassifikation
-    outcome = random.choices(
-        ["obsiegen", "unterliegen"],
-        weights=[0.45, 0.55],
-        k=1,
-    )[0]
+    # Outcome — binäre Klassifikation (balanciert 50/50)
+    outcome = random.choice(["obsiegen", "unterliegen"])
 
     return {
         "klaegervorbringen": klaeger,

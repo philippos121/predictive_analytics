@@ -51,10 +51,10 @@ DEFAULT_OUTPUT = _SCRIPT_DIR.parent / "data" / "prepared_dataset"
 # ---------------------------------------------------------------------------
 # Outcome-Mapping (numerisch ↔ Text)
 # ---------------------------------------------------------------------------
-OUTCOME_INT_TO_LABEL = {0: "UNTERLIEGEN", 1: "TEILWEISE", 2: "OBSIEGEN"}
+OUTCOME_INT_TO_LABEL = {0: "UNTERLIEGEN", 1: "UNTERLIEGEN", 2: "OBSIEGEN"}
 OUTCOME_STR_TO_LABEL = {
     "unterliegen": "UNTERLIEGEN",
-    "teilweise": "TEILWEISE",
+    "teilweise": "UNTERLIEGEN",
     "obsiegen": "OBSIEGEN",
 }
 
@@ -65,8 +65,7 @@ SYSTEM_PROMPT = (
     "Du bist ein juristischer Prognose-Assistent für österreichische Zivilverfahren. "
     "Auf Basis des Klägervorbringens und des Beklagtenvorbringens prognostizierst du "
     "den wahrscheinlichen Verfahrensausgang. Antworte ausschließlich mit "
-    "'OBSIEGEN' (Kläger gewinnt), 'TEILWEISE' (teilweises Obsiegen/Unterliegen) "
-    "oder 'UNTERLIEGEN' (Kläger verliert), "
+    "'OBSIEGEN' (Kläger gewinnt) oder 'UNTERLIEGEN' (Kläger verliert), "
     "gefolgt von einer kurzen Begründung in 1–3 Sätzen."
 )
 
@@ -199,7 +198,7 @@ def create_dataset(
 
     # Statistiken — Outcome-Verteilung über alle 3 Klassen
     labels = [build_assistant_response(e["outcome"]) for e in entries]
-    counts = {lbl: labels.count(lbl) for lbl in ["OBSIEGEN", "TEILWEISE", "UNTERLIEGEN"]}
+    counts = {lbl: labels.count(lbl) for lbl in ["OBSIEGEN", "UNTERLIEGEN"]}
     total = len(labels)
     dist_str = " | ".join(
         f"{lbl}={n} ({n/total*100:.1f}%)" for lbl, n in counts.items() if n > 0

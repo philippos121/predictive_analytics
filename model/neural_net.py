@@ -6,7 +6,7 @@ v2.0 — Structured data only, no embedding encoders.
 Single-input architecture using structured legal features (~77-dim):
 1. StructuredEncoder: multi-layer MLP to encode legal features
 2. Fusion MLP for final classification
-3. Output: 3-class (Unterliegen / Teilweise / Obsiegen)
+3. Output: 2-class binary (Unterliegen / Obsiegen)
 
 Much more compact than the embedding-based architecture (~28K vs ~2.56M params).
 """
@@ -29,7 +29,7 @@ class LitigationClassifier(nn.Module):
     Architecture (optimiert für strukturierte Daten, 50–10.000 Fälle):
     - StructuredEncoder: Multi-layer MLP encoding legal features
     - Fusion layer(s) before classification
-    - 3-class output (0=Unterliegen, 1=Teilweise, 2=Obsiegen)
+    - 2-class binary output (0=Unterliegen, 1=Obsiegen)
 
     Gesamtparameter: ~28 K (bei Standardkonfiguration mit ~77 Input-Features)
     """
@@ -90,8 +90,8 @@ class LitigationClassifier(nn.Module):
             structured: (batch, input_dim) tensor of encoded features
 
         Returns:
-            logits: (batch, 3)
-            probs: (batch, 3) — softmax probabilities
+            logits: (batch, num_classes)
+            probs: (batch, num_classes) — softmax probabilities
         """
         encoded = self.encoder(structured)
         fused = self.fusion(encoded)

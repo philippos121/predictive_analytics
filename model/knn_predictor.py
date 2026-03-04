@@ -37,7 +37,7 @@ class KNNLitigationPredictor:
         self.k = k
         self.train_features: Optional[np.ndarray] = None  # (N, feature_dim)
         self.train_labels: Optional[np.ndarray] = None      # (N,)
-        self.n_classes = 3
+        self.n_classes = 2
         self.is_fitted = False
         self._feature_engineer = None
 
@@ -68,7 +68,9 @@ class KNNLitigationPredictor:
         if feature_engineer.is_fitted:
             features = feature_engineer.scaler.transform(features)
 
-        labels = [int(c["structured"]["outcome"]) for c in labeled]
+        # Remap to binary: 0,1→0 (Unterliegen), 2→1 (Obsiegen)
+        remap = {0: 0, 1: 0, 2: 1}
+        labels = [remap[int(c["structured"]["outcome"])] for c in labeled]
 
         self.train_features = self._normalize(features)
         self.train_labels = np.array(labels, dtype=np.int64)
@@ -78,7 +80,7 @@ class KNNLitigationPredictor:
 
     def predict_proba_from_features(self, features: np.ndarray) -> np.ndarray:
         """
-        Return class probability vector [p_loss, p_partial, p_win]
+        Return class probability vector [p_loss, p_win]
         from a pre-encoded feature vector.
         """
         if not self.is_fitted:
@@ -116,11 +118,10 @@ class KNNLitigationPredictor:
             "predicted_outcome": predicted_class,
             "predicted_label": OUTCOME_LABELS[predicted_class],
             "probabilities": {
-                OUTCOME_LABELS[i]: float(probs[i]) for i in range(3)
+                OUTCOME_LABELS[i]: float(probs[i]) for i in range(2)
             },
             "confidence": float(probs.max()),
-            "p_win": float(probs[2]),
-            "p_partial": float(probs[1]),
+            "p_win": float(probs[1]),
             "p_loss": float(probs[0]),
         }
 

@@ -41,22 +41,21 @@ OPENAI_MAX_RETRIES = 5
 OPENAI_RETRY_DELAY_SEC = 2.0
 
 # ─── Outcome Labels ─────────────────────────────────────────────────────────────
+# Binary classification: Teilweise Obsiegen counts as Unterliegen.
+# Data extraction still stores 0/1/2 — remapping happens at training time.
 OUTCOME_LABELS = {
     0: "Unterliegen",
-    1: "Teilweises Obsiegen/Unterliegen",
-    2: "Obsiegen",
+    1: "Obsiegen",
 }
 
 OUTCOME_COLORS = {
     0: "#E74C3C",   # Red
-    1: "#F39C12",   # Orange
-    2: "#27AE60",   # Green
+    1: "#27AE60",   # Green
 }
 
 OUTCOME_ICONS = {
     0: "❌",
-    1: "⚖️",
-    2: "✅",
+    1: "✅",
 }
 
 # ─── Legal Claim Types (Anspruchsarten) ─────────────────────────────────────────
@@ -208,13 +207,13 @@ SECTION_LABELS = {
 #
 # Parameteranzahl ca.:
 #   StructuredEncoder (77→128→128):     ~20 K
-#   Fusion (128→64→3):                  ~8,4 K
+#   Fusion (128→64→2):                  ~8,3 K
 #   Gesamt: ~28 K  (früher: ~2,56 Mio. mit Embeddings)
 NN_CONFIG = {
     "hidden_dims": [128, 128],       # Hidden layers for structured encoder
     "fusion_dims": [64],             # Fusion layer(s) before classifier
     "dropout": 0.3,
-    "num_classes": 3,                # win / partial / loss
+    "num_classes": 2,                # win / loss (binary)
 }
 
 # ─── Training Configuration ─────────────────────────────────────────────────────

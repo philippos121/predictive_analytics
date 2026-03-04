@@ -40,7 +40,7 @@ DEFAULT_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
 DEFAULT_OUTPUT = str(_SCRIPT_DIR.parent / "output" / "legal-lora")
 DEFAULT_DATASET = str(_SCRIPT_DIR.parent / "data" / "prepared_dataset")
 MAX_SEQ_LEN = 1024  # Token-Limit pro Sample (spart VRAM)
-LABEL_CLASSES = ["OBSIEGEN", "TEILWEISE", "UNTERLIEGEN"]
+LABEL_CLASSES = ["OBSIEGEN", "UNTERLIEGEN"]
 
 
 # ---------------------------------------------------------------------------

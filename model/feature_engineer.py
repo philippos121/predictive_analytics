@@ -210,8 +210,12 @@ class LitigationDataset(torch.utils.data.Dataset):
 
     Each item returns:
     - structured: tensor of shape (feature_dim,)
-    - label: int (0, 1, 2)
+    - label: int (0=Unterliegen, 1=Obsiegen) — binary, Teilweise mapped to Unterliegen
     """
+
+    # Remap extracted 3-class labels to binary:
+    # 0 (Unterliegen) → 0, 1 (Teilweise) → 0, 2 (Obsiegen) → 1
+    LABEL_REMAP = {0: 0, 1: 0, 2: 1}
 
     def __init__(
         self,
@@ -239,8 +243,9 @@ class LitigationDataset(torch.utils.data.Dataset):
             self.structured_features[case_idx], dtype=torch.float32
         )
 
-        # Label
-        label = int(case["structured"]["outcome"])
+        # Label — remap to binary
+        raw_label = int(case["structured"]["outcome"])
+        label = self.LABEL_REMAP[raw_label]
 
         return structured, label
 
@@ -274,10 +279,11 @@ def prepare_dataset(
         for i in indices
     ]
 
-    # Group by label
-    label_to_indices: dict[int, list[int]] = {0: [], 1: [], 2: []}
+    # Remap to binary and group by label
+    label_to_indices: dict[int, list[int]] = {0: [], 1: []}
     for i, lbl in zip(indices, labels):
-        label_to_indices[int(lbl)].append(i)
+        binary_lbl = LitigationDataset.LABEL_REMAP[int(lbl)]
+        label_to_indices[binary_lbl].append(i)
 
     train_indices, val_indices = [], []
     for lbl, idxs in label_to_indices.items():
@@ -313,17 +319,18 @@ def collate_fn(batch: list) -> tuple:
 
 
 def compute_class_weights(cases: list[dict]) -> torch.Tensor:
-    """Compute inverse-frequency class weights for imbalanced datasets."""
-    labels = [
-        c["structured"].get("outcome")
+    """Compute inverse-frequency class weights for imbalanced binary datasets."""
+    remap = LitigationDataset.LABEL_REMAP
+    binary_labels = [
+        remap[int(c["structured"]["outcome"])]
         for c in cases
         if c["structured"].get("outcome") is not None
     ]
-    counts = [labels.count(i) for i in range(3)]
+    counts = [binary_labels.count(i) for i in range(2)]
     total = sum(counts)
 
     if total == 0 or any(c == 0 for c in counts):
-        return torch.ones(3)
+        return torch.ones(2)
 
-    weights = [total / (3 * c) for c in counts]
+    weights = [total / (2 * c) for c in counts]
     return torch.tensor(weights, dtype=torch.float32)

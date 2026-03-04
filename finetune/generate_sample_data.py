@@ -166,10 +166,10 @@ def generate_case() -> dict:
         mitverschulden_grund=mitverschulden_grund,
     )
 
-    # Outcome — 3 Klassen mit realistischer Verteilung
+    # Outcome — binäre Klassifikation
     outcome = random.choices(
-        ["obsiegen", "teilweise", "unterliegen"],
-        weights=[0.45, 0.15, 0.40],
+        ["obsiegen", "unterliegen"],
+        weights=[0.45, 0.55],
         k=1,
     )[0]
 
@@ -213,7 +213,7 @@ def main():
     from collections import Counter
     counts = Counter(c["outcome"] for c in cases)
     print(f"  {len(cases)} Fälle generiert -> {args.output}")
-    print(f"  Obsiegen: {counts['obsiegen']} | Teilweise: {counts['teilweise']} | Unterliegen: {counts['unterliegen']}")
+    print(f"  Obsiegen: {counts['obsiegen']} | Unterliegen: {counts['unterliegen']}")
 
 
 if __name__ == "__main__":

@@ -31,7 +31,7 @@ from prepare_data import SYSTEM_PROMPT, build_user_prompt
 # ---------------------------------------------------------------------------
 DEFAULT_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
 
-OUTCOME_LABELS = ["OBSIEGEN", "TEILWEISE", "UNTERLIEGEN"]
+OUTCOME_LABELS = ["OBSIEGEN", "UNTERLIEGEN"]
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +161,7 @@ def predict_probabilities(
     beklagter: str,
 ) -> dict[str, float]:
     """
-    Berechnet die Wahrscheinlichkeiten für OBSIEGEN / TEILWEISE / UNTERLIEGEN
+    Berechnet die Wahrscheinlichkeiten für OBSIEGEN / UNTERLIEGEN
     basierend auf den Logits des nächsten Tokens nach dem Prompt.
     """
     messages = [

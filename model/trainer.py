@@ -435,9 +435,9 @@ class LitigationTrainer:
         all_labels = np.array(all_labels)
         all_probs = np.array(all_probs)
 
-        # Per-class metrics
+        # Per-class metrics (binary: 0=Unterliegen, 1=Obsiegen)
         per_class = {}
-        for cls in range(3):
+        for cls in range(2):
             tp = ((all_preds == cls) & (all_labels == cls)).sum()
             fp = ((all_preds == cls) & (all_labels != cls)).sum()
             fn = ((all_preds != cls) & (all_labels == cls)).sum()
@@ -465,8 +465,10 @@ class LitigationTrainer:
                 continue
             result = self.knn.predict_case(case)
             all_preds.append(result["predicted_outcome"])
-            all_labels.append(int(outcome))
-            all_probs.append([result["p_loss"], result["p_partial"], result["p_win"]])
+            # Remap raw label to binary
+            remap = {0: 0, 1: 0, 2: 1}
+            all_labels.append(remap[int(outcome)])
+            all_probs.append([result["p_loss"], result["p_win"]])
 
         if not all_preds:
             return {"accuracy": 0.0, "per_class": {}, "predictions": [], "labels": [], "probabilities": []}
@@ -476,7 +478,7 @@ class LitigationTrainer:
         all_probs = np.array(all_probs)
 
         per_class = {}
-        for cls in range(3):
+        for cls in range(2):
             tp = int(((all_preds == cls) & (all_labels == cls)).sum())
             fp = int(((all_preds == cls) & (all_labels != cls)).sum())
             fn = int(((all_preds != cls) & (all_labels == cls)).sum())

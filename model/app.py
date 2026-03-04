@@ -141,7 +141,6 @@ st.markdown("""
         height: 100%;
     }
     .prob-win     { background: #2c6e49; }
-    .prob-partial { background: #7d5a00; }
     .prob-loss    { background: #8b1a1a; }
 
     /* ── Outcome result card ── */
@@ -153,8 +152,7 @@ st.markdown("""
         margin: 0.5rem 0;
     }
     .result-card.outcome-0 { border-left-color: var(--col-danger); }
-    .result-card.outcome-1 { border-left-color: var(--col-warning); }
-    .result-card.outcome-2 { border-left-color: var(--col-success); }
+    .result-card.outcome-1 { border-left-color: var(--col-success); }
 
     .result-label {
         font-size: 1.3rem;
@@ -312,10 +310,11 @@ with st.sidebar:
     if stats.get("labeled_cases", 0) > 0:
         oc = stats.get("outcome_distribution", {})
         st.markdown("**Outcome-Verteilung:**")
+        # Merge teilweise into unterliegen for display
+        n_unterl = oc.get('unterliegen', 0) + oc.get('teilweise', 0)
         st.caption(
             f"Obsiegen: {oc.get('obsiegen', 0)}  |  "
-            f"Teilw.: {oc.get('teilweise', 0)}  |  "
-            f"Unterl.: {oc.get('unterliegen', 0)}"
+            f"Unterliegen: {n_unterl}"
         )
 
     st.divider()
@@ -416,7 +415,7 @@ with tab_train:
             - Legal-Analyse (Anspruchsgrundlagen, prozessuale/materielle Einwendungen)
             - Rechtsgebiet, Verbrauchergeschäft, zitierte Normen
 
-            **Output:** 3 Klassen (Unterliegen / Teilweise / Obsiegen)
+            **Output:** 2 Klassen (Unterliegen / Obsiegen)
             """)
 
     # ── Training Controls ────────────────────────────────────────────────────────
@@ -704,11 +703,11 @@ with tab_eval:
             labels = result["labels"]
             preds = result["predictions"]
 
-            cm = np.zeros((3, 3), dtype=int)
+            cm = np.zeros((2, 2), dtype=int)
             for true, pred in zip(labels, preds):
                 cm[int(true)][int(pred)] += 1
 
-            class_names = [OUTCOME_LABELS[i] for i in range(3)]
+            class_names = [OUTCOME_LABELS[i] for i in range(2)]
             fig_cm = px.imshow(
                 cm,
                 labels=dict(x="Vorhergesagt", y="Tatsächlich", color="Anzahl"),
@@ -735,8 +734,8 @@ with tab_eval:
                 labels_arr = np.array(labels)
 
                 fig_probs = go.Figure()
-                colors = ["#8b1a1a", "#7d5a00", "#2c6e49"]
-                for cls in range(3):
+                colors = ["#8b1a1a", "#2c6e49"]
+                for cls in range(2):
                     mask = labels_arr == cls
                     if mask.sum() > 0:
                         fig_probs.add_trace(go.Box(
@@ -891,7 +890,6 @@ with tab_predict:
 
                 probs = [
                     ("Obsiegen",   result["p_win"],     "prob-win"),
-                    ("Teilweise",  result["p_partial"],  "prob-partial"),
                     ("Unterliegen",result["p_loss"],     "prob-loss"),
                 ]
 
@@ -1093,7 +1091,7 @@ with tab_ev:
             st.markdown("**Erwartungswert-Ergebnis**")
 
             # ── Probability Summary ──────────────────────────────────────────────
-            col_ev_r1, col_ev_r2, col_ev_r3 = st.columns(3)
+            col_ev_r1, col_ev_r2 = st.columns(2)
 
             with col_ev_r1:
                 p = ev["p_full_success_combined"]
@@ -1101,22 +1099,12 @@ with tab_ev:
                 st.markdown(
                     f'<div class="ev-card {css}">'
                     f'<div class="ev-value" style="color:#2c6e49">{p:.0%}</div>'
-                    f'<div class="ev-label">Vollständiges Obsiegen</div>'
+                    f'<div class="ev-label">Obsiegen</div>'
                     f"</div>",
                     unsafe_allow_html=True,
                 )
 
             with col_ev_r2:
-                p2 = ev["p_partial_success_combined"]
-                st.markdown(
-                    f'<div class="ev-card neutral">'
-                    f'<div class="ev-value" style="color:#7d5a00">{p2:.0%}</div>'
-                    f'<div class="ev-label">Teilweises Obsiegen</div>'
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-
-            with col_ev_r3:
                 p3 = ev["p_failure_combined"]
                 css3 = "negative" if p3 > 0.5 else "neutral"
                 st.markdown(
@@ -1179,11 +1167,10 @@ with tab_ev:
                 rk = ev["ratg_kosten"]
                 sw_val = ev["streitwert_eur"]
                 p_ob  = ev["p_full_success_combined"]
-                p_tob = ev["p_partial_success_combined"]
                 p_ul  = ev["p_failure_combined"]
 
                 with st.expander("Kostenszenarien nach RATG/ZPO", expanded=True):
-                    _sc1, _sc2, _sc3 = st.columns(3)
+                    _sc1, _sc2 = st.columns(2)
                     with _sc1:
                         netto_ob = sw_val - rk["kosten_obsiegen"]
                         st.markdown(
@@ -1196,20 +1183,6 @@ with tab_ev:
                             unsafe_allow_html=True,
                         )
                     with _sc2:
-                        netto_tob = sw_val * 0.5 - rk["kosten_teilobsiegen"]
-                        col = "#2c6e49" if netto_tob >= 0 else "#8b1a1a"
-                        sign = "+" if netto_tob >= 0 else ""
-                        st.markdown(
-                            f'<div class="ev-card neutral" style="text-align:center">'
-                            f'<div style="font-weight:600;color:#7d5a00">Teilerfolg ({p_tob:.0%})</div>'
-                            f'<div style="font-size:0.8rem;color:#555;margin:4px 0">§ 43 ZPO – eigene Anwaltskosten + ½ GGG</div>'
-                            f'<div style="font-family:monospace;font-size:1.1rem;color:{col}">'
-                            f'{sign}EUR {netto_tob:,.0f}</div>'
-                            f'<div style="font-size:0.75rem;color:#888">Kosten: EUR {rk["kosten_teilobsiegen"]:,.0f}</div>'
-                            f"</div>",
-                            unsafe_allow_html=True,
-                        )
-                    with _sc3:
                         netto_ul = -rk["kosten_unterliegen"]
                         st.markdown(
                             f'<div class="ev-card negative" style="text-align:center">'
@@ -1232,23 +1205,20 @@ with tab_ev:
                 if "ratg_kosten" in ev:
                     rk     = ev["ratg_kosten"]
                     p_ob   = ev["p_full_success_combined"]
-                    p_tob  = ev["p_partial_success_combined"]
                     p_ul   = ev["p_failure_combined"]
                     # Erwartete Kostenbelastung (probabilistisch)
                     ek_ob  = p_ob  * rk["kosten_obsiegen"]        # = 0
-                    ek_tob = p_tob * rk["kosten_teilobsiegen"]
                     ek_ul  = p_ul  * rk["kosten_unterliegen"]
-                    ek_ges = ek_ob + ek_tob + ek_ul
+                    ek_ges = ek_ob + ek_ul
 
                     fig_wf = go.Figure(go.Waterfall(
                         name="EV",
                         orientation="v",
-                        measure=["absolute", "relative", "relative", "relative", "relative", "total"],
+                        measure=["absolute", "relative", "relative", "relative", "total"],
                         x=[
                             "Streitwert",
                             "Erfolgsfaktor",
                             "E[Gegnerkosten bei Unterliegen]",
-                            "E[Eigene Kosten bei Teilerfolg]",
                             "E[GGG-Anteil]",
                             "Netto-EV",
                         ],
@@ -1256,16 +1226,14 @@ with tab_ev:
                             sw_val,
                             ev_g - sw_val,
                             -(p_ul * rk["gegner_anwaltskosten"]),
-                            -(ek_tob),
-                            -(p_ul * rk["ggg"] + p_tob * rk["ggg"] * 0.5),
+                            -(p_ul * rk["ggg"]),
                             0,
                         ],
                         text=[
                             f"EUR {sw_val:,.0f}",
                             f"EUR {ev_g - sw_val:,.0f}",
                             f"-EUR {p_ul * rk['gegner_anwaltskosten']:,.0f}",
-                            f"-EUR {ek_tob:,.0f}",
-                            f"-EUR {p_ul * rk['ggg'] + p_tob * rk['ggg'] * 0.5:,.0f}",
+                            f"-EUR {p_ul * rk['ggg']:,.0f}",
                             f"EUR {ev_n:,.0f}",
                         ],
                         textposition="outside",

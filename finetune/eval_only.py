@@ -26,6 +26,7 @@ def main():
     parser.add_argument("--adapter", default=DEFAULT_ADAPTER)
     parser.add_argument("--dataset", default=DEFAULT_DATASET)
     parser.add_argument("--output", default=None, help="Dir for results JSON (default: adapter dir)")
+    parser.add_argument("--max_samples", type=int, default=None, help="Limit validation samples (default: all)")
     args = parser.parse_args()
 
     output_dir = args.output or args.adapter
@@ -60,6 +61,8 @@ def main():
     logger.info(f"Lade Dataset von {args.dataset}")
     ds = load_from_disk(args.dataset)
     val_ds = ds["validation"]
+    if args.max_samples:
+        val_ds = val_ds.select(range(min(args.max_samples, len(val_ds))))
     logger.info(f"Validation-Samples: {len(val_ds)}")
 
     # Run classification eval
@@ -78,7 +81,8 @@ def main():
                            max_length=MAX_SEQ_LEN).to(model.device)
 
         with torch.no_grad():
-            output_ids = model.generate(**inputs, max_new_tokens=20, do_sample=False)
+            output_ids = model.generate(**inputs, max_new_tokens=20, do_sample=False,
+                                              pad_token_id=tokenizer.eos_token_id)
 
         generated_ids = output_ids[0][inputs["input_ids"].shape[1]:]
         prediction = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()

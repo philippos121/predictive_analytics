@@ -174,7 +174,7 @@ def get_training_args(output_dir: str, num_train_samples: int) -> SFTConfig:
         greater_is_better=False,
 
         # --- SFT-spezifisch ---
-        max_seq_length=MAX_SEQ_LEN,
+        max_length=MAX_SEQ_LEN,
         packing=False,                          # Kein Packing (Textlänge variiert stark)
         dataset_text_field=None,                # Wir nutzen das chat-Format
 

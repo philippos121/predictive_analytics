@@ -342,7 +342,7 @@ def train(
     logger.info(f"Eval-Loss: {eval_metrics.get('eval_loss', '?'):.4f}")
 
     # 9. Klassifikations-Metriken (Accuracy, F1, Confusion Matrix)
-    eval_classification(model, tokenizer, val_ds, output_dir)
+    evaluate_classification(model, tokenizer, val_ds, output_dir)
 
     # Trainings-Metriken speichern
     metrics_path = Path(output_dir) / "training_metrics.json"

@@ -287,6 +287,7 @@ def train(
     model_name: str,
     dataset_path: str,
     output_dir: str,
+    max_samples: int | None = None,
 ):
     """Führt das vollständige QLoRA-Finetuning durch."""
 
@@ -295,6 +296,15 @@ def train(
     dataset = load_from_disk(dataset_path)
     train_ds = dataset["train"]
     val_ds = dataset["validation"]
+
+    # Optional: Dataset auf max_samples begrenzen (für Test-Runs)
+    if max_samples is not None:
+        train_limit = min(max_samples, len(train_ds))
+        val_limit = min(max_samples // 5, len(val_ds))  # 20% fürs Validation
+        train_ds = train_ds.select(range(train_limit))
+        val_ds = val_ds.select(range(max(val_limit, 1)))
+        logger.info(f"Test-Modus: Dataset auf {train_limit} Train / {val_limit} Val begrenzt")
+
     logger.info(f"Train: {len(train_ds)} Samples | Validation: {len(val_ds)} Samples")
 
     # 2. Modell + Tokenizer laden
@@ -370,6 +380,12 @@ def main():
         help=f"Ausgabeverzeichnis für Adapter + Checkpoints (default: {DEFAULT_OUTPUT})",
     )
     parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Maximale Anzahl Training-Samples (für Test-Runs, z.B. 1000)",
+    )
+    parser.add_argument(
         "--resume",
         type=str,
         default=None,
@@ -392,7 +408,7 @@ def main():
             "Training könnte fehlschlagen oder sehr langsam sein."
         )
 
-    trainer = train(args.model, args.dataset, args.output)
+    trainer = train(args.model, args.dataset, args.output, max_samples=args.max_samples)
 
     if args.resume:
         trainer.train(resume_from_checkpoint=args.resume)

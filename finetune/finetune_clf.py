@@ -169,7 +169,14 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
     num_epochs = 3
     batch_size = 2
     grad_accum = 8
-    steps_per_epoch = len(train_ds) // (batch_size * grad_accum)
+
+    # Auto-reduce grad_accum so we get at least 1 step per epoch
+    num_batches = max(len(train_ds) // batch_size, 1)
+    if grad_accum > num_batches:
+        grad_accum = max(num_batches, 1)
+        logger.info(f"grad_accumulation_steps auf {grad_accum} reduziert (kleines Dataset)")
+
+    steps_per_epoch = num_batches // grad_accum
 
     logger.info(
         f"Training: max {num_epochs} Epochen (Early Stopping), "

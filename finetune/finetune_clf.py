@@ -85,11 +85,16 @@ def load_model_and_tokenizer(model_name: str):
     # Left-padding ensures the real content ends at the rightmost position.
     tokenizer.padding_side = "left"
 
+    # max_memory caps VRAM used during loading — the concurrent weight
+    # materialisation in bf16 can spike well past the final 4-bit footprint.
+    # Layers that don't fit in 9 GiB spill to CPU-RAM and are moved as needed.
+    max_memory = {0: "9GiB", "cpu": "24GiB"}
     model = AutoModelForSequenceClassification.from_pretrained(
         model_name,
         quantization_config=get_bnb_config(),
         device_map="auto",
-        torch_dtype=torch.bfloat16,
+        max_memory=max_memory,
+        dtype=torch.bfloat16,
         trust_remote_code=True,
         attn_implementation="eager",
         num_labels=NUM_LABELS,

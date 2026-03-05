@@ -14,11 +14,8 @@ Ablauf:
 """
 
 import argparse
-import concurrent.futures as _cf
-import gc
 import json
 import os
-from contextlib import contextmanager
 from pathlib import Path
 
 # Reduce CUDA fragmentation — must be set before any CUDA call.
@@ -77,25 +74,6 @@ def get_lora_config() -> LoraConfig:
     )
 
 
-@contextmanager
-def _limit_loading_threads(max_workers: int = 2):
-    """Temporarily cap ThreadPoolExecutor so only *max_workers* weight tensors
-    are materialised on the GPU at the same time.  This prevents the bf16→4-bit
-    loading pipeline from spiking past VRAM capacity."""
-    _Orig = _cf.ThreadPoolExecutor
-    _cap = max_workers
-
-    class _Limited(_Orig):
-        def __init__(self, *a, max_workers=None, **kw):
-            super().__init__(*a, max_workers=min(max_workers or _cap, _cap), **kw)
-
-    _cf.ThreadPoolExecutor = _Limited
-    try:
-        yield
-    finally:
-        _cf.ThreadPoolExecutor = _Orig
-
-
 def load_model_and_tokenizer(model_name: str):
     logger.info(f"Lade Modell: {model_name}")
 
@@ -111,25 +89,20 @@ def load_model_and_tokenizer(model_name: str):
     # Left-padding ensures the real content ends at the rightmost position.
     tokenizer.padding_side = "left"
 
-    # Clear stale CUDA caches before the heavy allocation.
-    torch.cuda.empty_cache()
-    gc.collect()
-
-    # Limit concurrent weight-loading threads to 2 so that at most two
-    # bf16 tensors (~800 MB) coexist on the GPU during materialisation,
-    # instead of dozens (~14 GB) with the default thread-pool size.
-    with _limit_loading_threads(2):
-        model = AutoModelForSequenceClassification.from_pretrained(
-            model_name,
-            quantization_config=get_bnb_config(),
-            device_map="auto",
-            dtype=torch.bfloat16,
-            trust_remote_code=True,
-            attn_implementation="eager",
-            num_labels=NUM_LABELS,
-            id2label=ID2LABEL,
-            label2id=LABEL2ID,
-        )
+    # Use torch_dtype (not dtype) — BnB reads torch_dtype to decide the
+    # weight loading precision.  The newer "dtype" param may not propagate
+    # to the BnB path, causing a silent fallback to float32 (28 GB → OOM).
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_name,
+        quantization_config=get_bnb_config(),
+        device_map="auto",
+        torch_dtype=torch.bfloat16,
+        trust_remote_code=True,
+        attn_implementation="eager",
+        num_labels=NUM_LABELS,
+        id2label=ID2LABEL,
+        label2id=LABEL2ID,
+    )
 
     model.config.pad_token_id = tokenizer.pad_token_id
 

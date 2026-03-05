@@ -102,11 +102,15 @@ def load_model_and_tokenizer(model_name: str):
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
     model.config.use_cache = False
 
-    # Classification head trainable in full precision
+    # Classification head: train in full precision with small init
+    # Default random init produces extreme logits → loss explodes (>>0.69).
+    # Small init keeps initial predictions near 50/50 → stable start.
     for name, param in model.named_parameters():
         if "score" in name:
             param.requires_grad = True
             param.data = param.data.float()
+            if "weight" in name:
+                torch.nn.init.normal_(param.data, mean=0.0, std=0.01)
 
     lora_config = get_lora_config()
     model = get_peft_model(model, lora_config)
@@ -179,8 +183,8 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
         per_device_eval_batch_size=2,
         gradient_accumulation_steps=grad_accum,
         num_train_epochs=num_epochs,
-        warmup_steps=10,
-        learning_rate=5e-5,
+        warmup_steps=20,
+        learning_rate=2e-5,
         lr_scheduler_type="cosine",
         weight_decay=0.01,
         gradient_checkpointing=True,

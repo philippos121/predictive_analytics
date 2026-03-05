@@ -57,7 +57,7 @@ def load_model(model_name: str, adapter_path: str):
         model_name,
         quantization_config=bnb_config,
         device_map="auto",
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         trust_remote_code=True,
         attn_implementation="eager",
         num_labels=2,

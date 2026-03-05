@@ -165,7 +165,7 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
 
     # Training config
-    num_epochs = 5
+    num_epochs = 3
     batch_size = 2
     grad_accum = 8
     steps_per_epoch = len(train_ds) // (batch_size * grad_accum)
@@ -182,7 +182,7 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
         per_device_eval_batch_size=batch_size * 2,
         gradient_accumulation_steps=grad_accum,
         num_train_epochs=num_epochs,
-        warmup_ratio=0.05,
+        warmup_steps=10,
         learning_rate=5e-5,
         lr_scheduler_type="cosine",
         weight_decay=0.01,

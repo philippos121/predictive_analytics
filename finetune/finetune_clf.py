@@ -22,11 +22,20 @@ import torch
 from datasets import load_from_disk
 from loguru import logger
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+)
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
     BitsAndBytesConfig,
+    DataCollatorWithPadding,
+    EarlyStoppingCallback,
     TrainingArguments,
     Trainer,
 )
@@ -72,6 +81,13 @@ def load_model_and_tokenizer(model_name: str):
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
+    # Left-padding is critical for causal models used for classification.
+    # The classification head reads the LAST non-pad token's hidden state.
+    # With right-padding (default), the last token is always a pad token,
+    # so the model would classify based on padding — not the actual text.
+    # Left-padding ensures the real content ends at the rightmost position.
+    tokenizer.padding_side = "left"
+
     model = AutoModelForSequenceClassification.from_pretrained(
         model_name,
         quantization_config=get_bnb_config(),
@@ -84,15 +100,14 @@ def load_model_and_tokenizer(model_name: str):
         label2id=LABEL2ID,
     )
 
-    # Use last token for classification (causal LM has no [CLS])
     model.config.pad_token_id = tokenizer.pad_token_id
 
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
     model.config.use_cache = False
 
-    # Make sure the classification head is trainable (full precision)
+    # Classification head trainable in full precision
     for name, param in model.named_parameters():
-        if "score" in name:  # The classification head
+        if "score" in name:
             param.requires_grad = True
             param.data = param.data.float()
 
@@ -133,36 +148,38 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
 
     model, tokenizer = load_model_and_tokenizer(model_name)
 
-    # Tokenize dataset
+    # Tokenize — only truncate, NO padding here.
+    # DataCollatorWithPadding will pad dynamically per batch to the longest
+    # sample in that batch. This avoids wasting compute on 2048-token padding
+    # when most texts are much shorter.
     def tokenize_fn(examples):
         return tokenizer(
             examples["text"],
             truncation=True,
             max_length=MAX_SEQ_LEN,
-            padding="max_length",
         )
 
     train_ds = train_ds.map(tokenize_fn, batched=True, remove_columns=["text"])
     val_ds = val_ds.map(tokenize_fn, batched=True, remove_columns=["text"])
 
-    train_ds.set_format("torch")
-    val_ds.set_format("torch")
+    data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
 
     # Training config
-    num_epochs = 3
+    num_epochs = 5
     batch_size = 2
     grad_accum = 8
     steps_per_epoch = len(train_ds) // (batch_size * grad_accum)
 
     logger.info(
-        f"Training: {num_epochs} Epochen, eff. Batch={batch_size * grad_accum}, "
-        f"~{steps_per_epoch * num_epochs} Schritte"
+        f"Training: max {num_epochs} Epochen (Early Stopping), "
+        f"eff. Batch={batch_size * grad_accum}, "
+        f"~{steps_per_epoch} Schritte/Epoche"
     )
 
     training_args = TrainingArguments(
         output_dir=output_dir,
         per_device_train_batch_size=batch_size,
-        per_device_eval_batch_size=batch_size,
+        per_device_eval_batch_size=batch_size * 2,
         gradient_accumulation_steps=grad_accum,
         num_train_epochs=num_epochs,
         warmup_ratio=0.05,
@@ -178,7 +195,7 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
         eval_strategy="steps",
         eval_steps=max(steps_per_epoch // 2, 1),
         save_strategy="steps",
-        save_steps=max(steps_per_epoch, 1),
+        save_steps=max(steps_per_epoch // 2, 1),
         save_total_limit=3,
         load_best_model_at_end=True,
         metric_for_best_model="f1",
@@ -194,7 +211,9 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
         args=training_args,
         train_dataset=train_ds,
         eval_dataset=val_ds,
+        data_collator=data_collator,
         compute_metrics=compute_metrics,
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
     )
 
     logger.info("=== Training startet ===")
@@ -209,18 +228,34 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
     tokenizer.save_pretrained(str(final_dir))
     logger.success(f"LoRA-Adapter + Classification-Head gespeichert unter {final_dir}")
 
-    # Evaluate
-    eval_metrics = trainer.evaluate()
+    # Final evaluation with confusion matrix
+    eval_output = trainer.predict(val_ds)
+    eval_metrics = eval_output.metrics
+    preds = np.argmax(eval_output.predictions, axis=-1)
+    labels = eval_output.label_ids
+
     logger.info(
-        f"Eval — Accuracy: {eval_metrics.get('eval_accuracy', '?'):.4f} | "
-        f"F1: {eval_metrics.get('eval_f1', '?'):.4f}"
+        f"Eval — Accuracy: {eval_metrics.get('test_accuracy', '?'):.4f} | "
+        f"F1: {eval_metrics.get('test_f1', '?'):.4f}"
     )
+
+    cm = confusion_matrix(labels, preds)
+    report = classification_report(
+        labels, preds, target_names=["UNTERLIEGEN", "OBSIEGEN"], digits=4
+    )
+    logger.info(f"\nConfusion Matrix:\n{cm}")
+    logger.info(f"\nClassification Report:\n{report}")
 
     # Save metrics
     metrics_path = Path(output_dir) / "training_metrics.json"
-    all_metrics = {**metrics, **eval_metrics}
+    all_metrics = {
+        **metrics,
+        **eval_metrics,
+        "confusion_matrix": cm.tolist(),
+        "classification_report": report,
+    }
     with open(metrics_path, "w", encoding="utf-8") as f:
-        json.dump(all_metrics, f, indent=2)
+        json.dump(all_metrics, f, indent=2, ensure_ascii=False)
     logger.info(f"Metriken gespeichert unter {metrics_path}")
 
     return trainer

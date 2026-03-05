@@ -48,6 +48,10 @@ def load_model(model_name: str, adapter_path: str):
     )
 
     tokenizer = AutoTokenizer.from_pretrained(adapter_path)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+    tokenizer.padding_side = "left"
 
     model = AutoModelForSequenceClassification.from_pretrained(
         model_name,
@@ -60,13 +64,10 @@ def load_model(model_name: str, adapter_path: str):
         id2label=ID2LABEL,
         label2id=LABEL2ID,
     )
-    model.config.pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id
+    model.config.pad_token_id = tokenizer.pad_token_id
 
     model = PeftModel.from_pretrained(model, adapter_path)
     model.eval()
-
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
 
     logger.success("Modell geladen und bereit.")
     return model, tokenizer

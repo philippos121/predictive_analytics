@@ -26,7 +26,7 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer, Bits
 # ---------------------------------------------------------------------------
 DEFAULT_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
 DEFAULT_ADAPTER = "output/legal-lora-clf/final"
-MAX_SEQ_LEN = 2048
+MAX_SEQ_LEN = 4096
 
 ID2LABEL = {0: "UNTERLIEGEN", 1: "OBSIEGEN"}
 LABEL2ID = {"UNTERLIEGEN": 0, "OBSIEGEN": 1}
@@ -77,9 +77,10 @@ def load_model(model_name: str, adapter_path: str):
 # Text aufbauen (gleich wie in prepare_data_clf.py)
 # ---------------------------------------------------------------------------
 def build_text(klaeger: str, beklagter: str) -> str:
-    parts = [f"Klägervorbringen: {klaeger}"]
+    parts = [f"[KLÄGER]\n{klaeger}"]
     if beklagter:
-        parts.append(f"Beklagtenvorbringen: {beklagter}")
+        parts.append(f"[BEKLAGTER]\n{beklagter}")
+    parts.append("[PROGNOSE]")
     return "\n\n".join(parts)
 
 

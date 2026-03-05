@@ -61,10 +61,11 @@ def _normalize_entry(raw: dict) -> dict | None:
 
 
 def build_text(klaeger: str, beklagter: str) -> str:
-    """Einfaches Text-Format ohne Chat-Template — spart Tokens."""
-    parts = [f"Klägervorbringen: {klaeger}"]
+    """Strukturiertes Format mit expliziten Marker-Tags für Aufmerksamkeit."""
+    parts = [f"[KLÄGER]\n{klaeger}"]
     if beklagter:
-        parts.append(f"Beklagtenvorbringen: {beklagter}")
+        parts.append(f"[BEKLAGTER]\n{beklagter}")
+    parts.append("[PROGNOSE]")
     return "\n\n".join(parts)
 
 

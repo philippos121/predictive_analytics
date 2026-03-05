@@ -39,7 +39,7 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_MODEL = "LeoLM/leo-mistral-hessianai-7b-chat"
 DEFAULT_OUTPUT = str(_SCRIPT_DIR.parent / "output" / "legal-lora")
 DEFAULT_DATASET = str(_SCRIPT_DIR.parent / "data" / "prepared_dataset")
-MAX_SEQ_LEN = 2048  # Token-Limit pro Sample (höher für lange Rechtstexte)
+MAX_SEQ_LEN = 4096  # Token-Limit pro Sample (höher für lange Rechtstexte)
 LABEL_CLASSES = ["OBSIEGEN", "UNTERLIEGEN"]
 
 

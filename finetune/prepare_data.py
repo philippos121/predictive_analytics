@@ -63,10 +63,7 @@ OUTCOME_STR_TO_LABEL = {
 # ---------------------------------------------------------------------------
 # System-Prompt für das Modell
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT = (
-    "Auf Basis von Klägervorbringen und Beklagtenvorbringen, "
-    "prognostiziere OBSIEGEN oder UNTERLIEGEN."
-)
+SYSTEM_PROMPT = "Prognostiziere OBSIEGEN oder UNTERLIEGEN."
 
 # ---------------------------------------------------------------------------
 # Prompt-Vorlage

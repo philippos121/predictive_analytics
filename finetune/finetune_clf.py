@@ -14,8 +14,15 @@ Ablauf:
 """
 
 import argparse
+import concurrent.futures as _cf
+import gc
 import json
+import os
+from contextlib import contextmanager
 from pathlib import Path
+
+# Reduce CUDA fragmentation — must be set before any CUDA call.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import numpy as np
 import torch
@@ -70,6 +77,25 @@ def get_lora_config() -> LoraConfig:
     )
 
 
+@contextmanager
+def _limit_loading_threads(max_workers: int = 2):
+    """Temporarily cap ThreadPoolExecutor so only *max_workers* weight tensors
+    are materialised on the GPU at the same time.  This prevents the bf16→4-bit
+    loading pipeline from spiking past VRAM capacity."""
+    _Orig = _cf.ThreadPoolExecutor
+    _cap = max_workers
+
+    class _Limited(_Orig):
+        def __init__(self, *a, max_workers=None, **kw):
+            super().__init__(*a, max_workers=min(max_workers or _cap, _cap), **kw)
+
+    _cf.ThreadPoolExecutor = _Limited
+    try:
+        yield
+    finally:
+        _cf.ThreadPoolExecutor = _Orig
+
+
 def load_model_and_tokenizer(model_name: str):
     logger.info(f"Lade Modell: {model_name}")
 
@@ -85,22 +111,25 @@ def load_model_and_tokenizer(model_name: str):
     # Left-padding ensures the real content ends at the rightmost position.
     tokenizer.padding_side = "left"
 
-    # max_memory caps VRAM used during loading — the concurrent weight
-    # materialisation in bf16 can spike well past the final 4-bit footprint.
-    # Layers that don't fit in 9 GiB spill to CPU-RAM and are moved as needed.
-    max_memory = {0: "9GiB", "cpu": "24GiB"}
-    model = AutoModelForSequenceClassification.from_pretrained(
-        model_name,
-        quantization_config=get_bnb_config(),
-        device_map="auto",
-        max_memory=max_memory,
-        dtype=torch.bfloat16,
-        trust_remote_code=True,
-        attn_implementation="eager",
-        num_labels=NUM_LABELS,
-        id2label=ID2LABEL,
-        label2id=LABEL2ID,
-    )
+    # Clear stale CUDA caches before the heavy allocation.
+    torch.cuda.empty_cache()
+    gc.collect()
+
+    # Limit concurrent weight-loading threads to 2 so that at most two
+    # bf16 tensors (~800 MB) coexist on the GPU during materialisation,
+    # instead of dozens (~14 GB) with the default thread-pool size.
+    with _limit_loading_threads(2):
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_name,
+            quantization_config=get_bnb_config(),
+            device_map="auto",
+            dtype=torch.bfloat16,
+            trust_remote_code=True,
+            attn_implementation="eager",
+            num_labels=NUM_LABELS,
+            id2label=ID2LABEL,
+            label2id=LABEL2ID,
+        )
 
     model.config.pad_token_id = tokenizer.pad_token_id
 

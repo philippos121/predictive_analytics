@@ -170,10 +170,12 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
     batch_size = 2
     grad_accum = 8
 
-    # Auto-reduce grad_accum so we get at least 1 step per epoch
+    # Auto-reduce grad_accum for small datasets so training doesn't stall.
+    # Each accumulated batch processes long sequences through a 7B model with
+    # gradient checkpointing, so fewer accum steps = faster visible progress.
     num_batches = max(len(train_ds) // batch_size, 1)
-    if grad_accum > num_batches:
-        grad_accum = max(num_batches, 1)
+    if num_batches <= grad_accum:
+        grad_accum = 1
         logger.info(f"grad_accumulation_steps auf {grad_accum} reduziert (kleines Dataset)")
 
     steps_per_epoch = num_batches // grad_accum
@@ -190,7 +192,7 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
         per_device_eval_batch_size=2,
         gradient_accumulation_steps=grad_accum,
         num_train_epochs=num_epochs,
-        warmup_steps=20,
+        warmup_ratio=0.1,
         learning_rate=2e-5,
         lr_scheduler_type="cosine",
         weight_decay=0.01,

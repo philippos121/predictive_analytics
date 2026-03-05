@@ -133,10 +133,10 @@ def get_training_args(output_dir: str, num_train_samples: int) -> SFTConfig:
     batch_size = 2
     grad_accum = 8  # Effektive Batch-Größe: 2 * 8 = 16
 
-    # Auto-reduce grad_accum so we get at least 1 step per epoch
+    # Auto-reduce grad_accum for small datasets so training doesn't stall.
     num_batches = max(num_train_samples // batch_size, 1)
-    if grad_accum > num_batches:
-        grad_accum = max(num_batches, 1)
+    if num_batches <= grad_accum:
+        grad_accum = 1
         logger.info(f"grad_accumulation_steps auf {grad_accum} reduziert (kleines Dataset)")
 
     steps_per_epoch = num_batches // grad_accum

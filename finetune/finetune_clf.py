@@ -89,7 +89,7 @@ def load_model_and_tokenizer(model_name: str):
         model_name,
         quantization_config=get_bnb_config(),
         device_map="auto",
-        dtype=torch.bfloat16,
+        torch_dtype=torch.bfloat16,
         trust_remote_code=True,
         attn_implementation="eager",
         num_labels=NUM_LABELS,

@@ -164,10 +164,10 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
 
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
 
-    # Training config
+    # Training config — batch_size=1 to fit 4096 tokens in 16 GB VRAM
     num_epochs = 3
-    batch_size = 2
-    grad_accum = 8
+    batch_size = 1
+    grad_accum = 16
     steps_per_epoch = len(train_ds) // (batch_size * grad_accum)
 
     logger.info(
@@ -179,7 +179,7 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
     training_args = TrainingArguments(
         output_dir=output_dir,
         per_device_train_batch_size=batch_size,
-        per_device_eval_batch_size=batch_size * 2,
+        per_device_eval_batch_size=2,
         gradient_accumulation_steps=grad_accum,
         num_train_epochs=num_epochs,
         warmup_steps=10,

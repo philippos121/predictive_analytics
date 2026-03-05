@@ -9,7 +9,7 @@ Ablauf:
   2. python finetune.py --dataset data/prepared_dataset
   3. python inference.py --adapter output/legal-lora --prompt "..."
 
-Basis-Modell: LeoLM/leo-mistral-hessianai-7b-chat (German-optimized Mistral)
+Basis-Modell: mistralai/Mistral-7B-Instruct-v0.3
 (austauschbar über --model, z.B. meta-llama/Llama-3.1-8B-Instruct)
 """
 
@@ -36,7 +36,7 @@ from trl import SFTTrainer, SFTConfig
 # Defaults
 # ---------------------------------------------------------------------------
 _SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_MODEL = "LeoLM/leo-mistral-hessianai-7b-chat"
+DEFAULT_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
 DEFAULT_OUTPUT = str(_SCRIPT_DIR.parent / "output" / "legal-lora")
 DEFAULT_DATASET = str(_SCRIPT_DIR.parent / "data" / "prepared_dataset")
 MAX_SEQ_LEN = 4096  # Token-Limit pro Sample (höher für lange Rechtstexte)

@@ -28,7 +28,7 @@ from prepare_data import SYSTEM_PROMPT, build_user_prompt
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
-DEFAULT_MODEL = "LeoLM/leo-mistral-hessianai-7b-chat"
+DEFAULT_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
 DEFAULT_ADAPTER = "output/legal-lora/final"
 
 OUTCOME_LABELS = ["OBSIEGEN", "UNTERLIEGEN"]

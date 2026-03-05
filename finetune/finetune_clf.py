@@ -32,7 +32,7 @@ from transformers import (
 )
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_MODEL = "LeoLM/leo-mistral-hessianai-7b-chat"
+DEFAULT_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
 DEFAULT_OUTPUT = str(_SCRIPT_DIR.parent / "output" / "legal-lora-clf")
 DEFAULT_DATASET = str(_SCRIPT_DIR.parent / "data" / "prepared_dataset_clf")
 MAX_SEQ_LEN = 2048

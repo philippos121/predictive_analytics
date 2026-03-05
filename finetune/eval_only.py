@@ -22,7 +22,7 @@ LABEL_CLASSES = ["OBSIEGEN", "UNTERLIEGEN"]
 LABEL_ALIAS = {"TEILWEISE": "UNTERLIEGEN"}
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_MODEL = "LeoLM/leo-mistral-hessianai-7b-chat"
+DEFAULT_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
 DEFAULT_ADAPTER = str(_SCRIPT_DIR.parent / "output" / "legal-lora" / "final")
 DEFAULT_DATASET = str(_SCRIPT_DIR.parent / "data" / "prepared_dataset")
 

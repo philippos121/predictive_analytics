@@ -11,7 +11,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 MAX_SEQ_LEN = 1024
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
+DEFAULT_MODEL = "LeoLM/leo-mistral-hessianai-7b-chat"
 DEFAULT_ADAPTER = str(_SCRIPT_DIR.parent / "output" / "legal-lora" / "final")
 
 SYSTEM_PROMPT = (

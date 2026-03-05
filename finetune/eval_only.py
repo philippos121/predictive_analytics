@@ -16,13 +16,13 @@ from peft import PeftModel
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-MAX_SEQ_LEN = 1024
+MAX_SEQ_LEN = 2048
 LABEL_CLASSES = ["OBSIEGEN", "UNTERLIEGEN"]
 # Map legacy 3-class labels to binary (TEILWEISE → UNTERLIEGEN)
 LABEL_ALIAS = {"TEILWEISE": "UNTERLIEGEN"}
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
+DEFAULT_MODEL = "LeoLM/leo-mistral-hessianai-7b-chat"
 DEFAULT_ADAPTER = str(_SCRIPT_DIR.parent / "output" / "legal-lora" / "final")
 DEFAULT_DATASET = str(_SCRIPT_DIR.parent / "data" / "prepared_dataset")
 

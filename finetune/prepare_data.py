@@ -64,11 +64,8 @@ OUTCOME_STR_TO_LABEL = {
 # System-Prompt für das Modell
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = (
-    "Du bist ein juristischer Prognose-Assistent für österreichische Zivilverfahren. "
-    "Auf Basis des Klägervorbringens und des Beklagtenvorbringens prognostizierst du "
-    "den wahrscheinlichen Verfahrensausgang. Antworte ausschließlich mit "
-    "'OBSIEGEN' (Kläger gewinnt) oder 'UNTERLIEGEN' (Kläger verliert), "
-    "gefolgt von einer kurzen Begründung in 1–3 Sätzen."
+    "Prognostiziere den Ausgang eines österreichischen Zivilverfahrens. "
+    "Antworte mit OBSIEGEN oder UNTERLIEGEN."
 )
 
 # ---------------------------------------------------------------------------

@@ -74,12 +74,12 @@ python prepare_data.py \
 
 # --- 4. Finetuning starten ---
 echo -e "${YELLOW}[4/4] Starte QLoRA-Finetuning...${NC}"
-echo "  Modell: mistralai/Mistral-7B-Instruct-v0.3"
+echo "  Modell: LeoLM/leo-mistral-hessianai-7b-chat"
 echo "  Methode: QLoRA (4-bit NF4 + LoRA r=64)"
 echo ""
 
 python finetune.py \
-    --model mistralai/Mistral-7B-Instruct-v0.3 \
+    --model LeoLM/leo-mistral-hessianai-7b-chat \
     --dataset data/prepared_dataset \
     --output output/legal-lora
 

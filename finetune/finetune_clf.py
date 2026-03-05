@@ -62,13 +62,10 @@ def get_bnb_config() -> BitsAndBytesConfig:
 def get_lora_config() -> LoraConfig:
     return LoraConfig(
         task_type=TaskType.SEQ_CLS,
-        r=64,
-        lora_alpha=128,
+        r=16,
+        lora_alpha=32,
         lora_dropout=0.05,
-        target_modules=[
-            "q_proj", "k_proj", "v_proj", "o_proj",
-            "gate_proj", "up_proj", "down_proj",
-        ],
+        target_modules=["q_proj", "v_proj"],
         bias="none",
     )
 
@@ -164,10 +161,10 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
 
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
 
-    # Training config — batch_size=1 to fit 4096 tokens in 16 GB VRAM
+    # Training config — lighter LoRA allows batch_size=2 with 4096 seq len
     num_epochs = 3
-    batch_size = 1
-    grad_accum = 16
+    batch_size = 2
+    grad_accum = 8
     steps_per_epoch = len(train_ds) // (batch_size * grad_accum)
 
     logger.info(

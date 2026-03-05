@@ -3,7 +3,7 @@ from pathlib import Path
 from collections import Counter
 from datasets import load_from_disk
 
-ds_path = Path(__file__).resolve().parent.parent / "data" / "prepared_dataset"
+ds_path = Path(__file__).resolve().parent.parent / "data" / "prepared_dataset_clf"
 ds = load_from_disk(str(ds_path))
 print(ds)
 print("---")

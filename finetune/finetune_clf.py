@@ -290,7 +290,7 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
         eval_steps=max(steps_per_epoch // 2, 1),
         save_strategy="steps",
         save_steps=max(steps_per_epoch // 2, 1),
-        save_total_limit=3,
+        save_total_limit=1,
         load_best_model_at_end=True,
         metric_for_best_model="f1",
         greater_is_better=True,

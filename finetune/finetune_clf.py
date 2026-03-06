@@ -188,9 +188,10 @@ def compute_metrics(eval_pred):
     preds = np.argmax(logits, axis=-1)
     return {
         "accuracy": accuracy_score(labels, preds),
-        "f1": f1_score(labels, preds, average="binary"),
-        "precision": precision_score(labels, preds, average="binary", zero_division=0),
-        "recall": recall_score(labels, preds, average="binary", zero_division=0),
+        "f1_macro": f1_score(labels, preds, average="macro"),
+        "f1_binary": f1_score(labels, preds, average="binary"),
+        "precision": precision_score(labels, preds, average="macro", zero_division=0),
+        "recall": recall_score(labels, preds, average="macro", zero_division=0),
     }
 
 
@@ -277,14 +278,14 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
         gradient_accumulation_steps=grad_accum,
         num_train_epochs=num_epochs,
         warmup_ratio=0.1,
-        learning_rate=2e-5,
+        learning_rate=5e-5,
         lr_scheduler_type="cosine",
         weight_decay=0.01,
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
         bf16=True,
         optim="paged_adamw_8bit",
-        max_grad_norm=0.3,
+        max_grad_norm=1.0,
         logging_steps=10,
         eval_strategy="steps",
         eval_steps=max(steps_per_epoch // 2, 1),
@@ -292,7 +293,7 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
         save_steps=max(steps_per_epoch // 2, 1),
         save_total_limit=1,
         load_best_model_at_end=True,
-        metric_for_best_model="f1",
+        metric_for_best_model="f1_macro",
         greater_is_better=True,
         report_to="none",
         seed=42,

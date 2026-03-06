@@ -270,9 +270,9 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
     batch_size = 1
     if n < 200:
         grad_accum = max(1, min(8, n // batch_size))
-    elif n < 2_000:
+    elif n < 10_000:
         grad_accum = 8
-    elif n < 20_000:
+    elif n < 50_000:
         grad_accum = 16
     else:
         grad_accum = 32

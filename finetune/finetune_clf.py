@@ -15,8 +15,6 @@ Ablauf:
 
 import argparse
 import json
-import sys
-from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -72,46 +70,6 @@ def get_lora_config() -> LoraConfig:
     )
 
 
-@contextmanager
-def _limit_loading_threads(cap: int = 2):
-    """Cap ThreadPoolExecutor during model loading.
-
-    transformers' core_model_loading.py materialises weight tensors on GPU
-    concurrently via a thread pool.  Each tensor lives in bf16 until BnB
-    compresses it to 4-bit.  With the default pool size (20+ threads) the
-    concurrent bf16 tensors can total ~14 GB for a 7B model — exceeding
-    16 GB VRAM.  Limiting to *cap* keeps the peak at ~800 MB.
-
-    We must patch the name directly inside each module's namespace because
-    ``from concurrent.futures import ThreadPoolExecutor`` captures a local
-    reference at import time — patching the parent module afterwards has
-    no effect.
-    """
-    from concurrent.futures import ThreadPoolExecutor as _OrigTPE
-
-    _cap = cap
-
-    class _Limited(_OrigTPE):
-        def __init__(self, *a, max_workers=None, **kw):
-            super().__init__(*a, max_workers=min(max_workers or _cap, _cap), **kw)
-
-    # Patch every already-imported module that holds a reference.
-    _patches: list[tuple] = []
-    for mod in sys.modules.values():
-        try:
-            if getattr(mod, "ThreadPoolExecutor", None) is _OrigTPE:
-                mod.ThreadPoolExecutor = _Limited
-                _patches.append(mod)
-        except Exception:
-            pass
-
-    try:
-        yield
-    finally:
-        for mod in _patches:
-            mod.ThreadPoolExecutor = _OrigTPE
-
-
 def load_model_and_tokenizer(model_name: str):
     logger.info(f"Lade Modell: {model_name}")
 
@@ -127,20 +85,17 @@ def load_model_and_tokenizer(model_name: str):
     # Left-padding ensures the real content ends at the rightmost position.
     tokenizer.padding_side = "left"
 
-    # Limit concurrent weight-loading threads to avoid OOM.  See
-    # _limit_loading_threads docstring for details.
-    with _limit_loading_threads(2):
-        model = AutoModelForSequenceClassification.from_pretrained(
-            model_name,
-            quantization_config=get_bnb_config(),
-            device_map="auto",
-            dtype=torch.bfloat16,
-            trust_remote_code=True,
-            attn_implementation="eager",
-            num_labels=NUM_LABELS,
-            id2label=ID2LABEL,
-            label2id=LABEL2ID,
-        )
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_name,
+        quantization_config=get_bnb_config(),
+        device_map="auto",
+        dtype=torch.bfloat16,
+        trust_remote_code=True,
+        attn_implementation="eager",
+        num_labels=NUM_LABELS,
+        id2label=ID2LABEL,
+        label2id=LABEL2ID,
+    )
 
     model.config.pad_token_id = tokenizer.pad_token_id
 

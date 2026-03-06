@@ -4,7 +4,7 @@
 
 # Core
 torch>=2.3.0
-transformers>=4.44.0
+transformers>=4.44.0,<4.46.0  # 4.46+ has concurrent weight loading that OOMs on 16 GB GPUs
 accelerate>=0.33.0
 datasets>=2.20.0
 

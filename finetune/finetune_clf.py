@@ -249,26 +249,72 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
     class_weights = torch.tensor(class_weights, dtype=torch.float32)
     logger.info(f"Class weights: UNTERLIEGEN={class_weights[0]:.2f}, OBSIEGEN={class_weights[1]:.2f}")
 
-    # Training config — lighter LoRA allows batch_size=2 with 4096 seq len
-    # More epochs for small datasets; early stopping will halt if converged
-    num_epochs = 10 if len(train_ds) < 100 else 3
+    # ── Adaptive training config ──────────────────────────────────────
+    # All hyperparameters scale with dataset size so the same script works
+    # for ~100, 1 000, 10 000, and 100 000+ samples without manual tuning.
+    n = len(train_ds)
+
+    # Epochs: small datasets need more passes; early stopping still guards
+    if n < 200:
+        num_epochs = 10
+    elif n < 2_000:
+        num_epochs = 5
+    elif n < 20_000:
+        num_epochs = 3
+    else:
+        num_epochs = 2
+
+    # Batch size & gradient accumulation → effective batch size
+    # Larger datasets benefit from bigger effective batches for stable gradients.
+    # batch_size stays 1 (VRAM-safe for 4096 seq len on 16 GB), grad_accum scales.
     batch_size = 1
-    grad_accum = 8
+    if n < 200:
+        grad_accum = max(1, min(8, n // batch_size))
+    elif n < 2_000:
+        grad_accum = 8
+    elif n < 20_000:
+        grad_accum = 16
+    else:
+        grad_accum = 32
 
-    # Auto-reduce grad_accum for small datasets so training doesn't stall.
-    # Each accumulated batch processes long sequences through a 7B model with
-    # gradient checkpointing, so fewer accum steps = faster visible progress.
-    num_batches = max(len(train_ds) // batch_size, 1)
-    if num_batches <= grad_accum:
-        grad_accum = 1
-        logger.info(f"grad_accumulation_steps auf {grad_accum} reduziert (kleines Dataset)")
+    # Learning rate: higher for tiny datasets (head needs to move fast),
+    # lower for large datasets (more updates → risk of overshooting)
+    if n < 200:
+        lr = 5e-5
+    elif n < 2_000:
+        lr = 3e-5
+    elif n < 20_000:
+        lr = 2e-5
+    else:
+        lr = 1e-5
 
-    steps_per_epoch = num_batches // grad_accum
+    num_batches = max(n // batch_size, 1)
+    steps_per_epoch = max(num_batches // grad_accum, 1)
 
+    # Eval / save frequency: ~2x per epoch for small, ~4x for large
+    if n < 2_000:
+        evals_per_epoch = 2
+    elif n < 20_000:
+        evals_per_epoch = 4
+    else:
+        evals_per_epoch = 4
+
+    eval_save_steps = max(steps_per_epoch // evals_per_epoch, 1)
+
+    # Logging: frequent for small, sparser for large to avoid log flood
+    log_steps = max(steps_per_epoch // 10, 1)
+
+    # Early stopping patience: more patient when evals are frequent
+    es_patience = 5 if n < 2_000 else 8
+
+    # Keep more checkpoints for long runs
+    save_limit = 1 if n < 2_000 else 3
+
+    eff_batch = batch_size * grad_accum
     logger.info(
-        f"Training: max {num_epochs} Epochen (Early Stopping), "
-        f"eff. Batch={batch_size * grad_accum}, "
-        f"~{steps_per_epoch} Schritte/Epoche"
+        f"Adaptive config (n={n}): {num_epochs} Epochen, LR={lr}, "
+        f"eff. Batch={eff_batch}, ~{steps_per_epoch} Schritte/Epoche, "
+        f"eval alle {eval_save_steps} Schritte, ES-Patience={es_patience}"
     )
 
     training_args = TrainingArguments(
@@ -278,7 +324,7 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
         gradient_accumulation_steps=grad_accum,
         num_train_epochs=num_epochs,
         warmup_ratio=0.1,
-        learning_rate=5e-5,
+        learning_rate=lr,
         lr_scheduler_type="cosine",
         weight_decay=0.01,
         gradient_checkpointing=True,
@@ -286,12 +332,12 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
         bf16=True,
         optim="paged_adamw_8bit",
         max_grad_norm=1.0,
-        logging_steps=10,
+        logging_steps=log_steps,
         eval_strategy="steps",
-        eval_steps=max(steps_per_epoch // 2, 1),
+        eval_steps=eval_save_steps,
         save_strategy="steps",
-        save_steps=max(steps_per_epoch // 2, 1),
-        save_total_limit=1,
+        save_steps=eval_save_steps,
+        save_total_limit=save_limit,
         load_best_model_at_end=True,
         metric_for_best_model="f1_macro",
         greater_is_better=True,
@@ -309,7 +355,7 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
         eval_dataset=val_ds,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=5)],
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=es_patience)],
     )
 
     logger.info("=== Training startet ===")

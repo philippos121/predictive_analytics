@@ -362,7 +362,8 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
     train_result = trainer.train()
 
     metrics = train_result.metrics
-    logger.info(f"Training abgeschlossen. Loss: {metrics.get('train_loss', '?'):.4f}")
+    train_loss = metrics.get('train_loss')
+    logger.info(f"Training abgeschlossen. Loss: {train_loss:.4f}" if train_loss is not None else "Training abgeschlossen.")
 
     # Save adapter
     final_dir = Path(output_dir) / "final"
@@ -371,14 +372,18 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
     logger.success(f"LoRA-Adapter + Classification-Head gespeichert unter {final_dir}")
 
     # Final evaluation with confusion matrix
+    logger.info("=== Finale Evaluation auf Validation-Set ===")
     eval_output = trainer.predict(val_ds)
     eval_metrics = eval_output.metrics
     preds = np.argmax(eval_output.predictions, axis=-1)
     labels = eval_output.label_ids
 
+    acc = eval_metrics.get('test_accuracy', eval_metrics.get('eval_accuracy'))
+    f1 = eval_metrics.get('test_f1_macro', eval_metrics.get('eval_f1_macro'))
     logger.info(
-        f"Eval — Accuracy: {eval_metrics.get('test_accuracy', '?'):.4f} | "
-        f"F1: {eval_metrics.get('test_f1', '?'):.4f}"
+        f"Eval — Accuracy: {acc:.4f} | F1-macro: {f1:.4f}"
+        if acc is not None and f1 is not None
+        else f"Eval metrics: {eval_metrics}"
     )
 
     cm = confusion_matrix(labels, preds)

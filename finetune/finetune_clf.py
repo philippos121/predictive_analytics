@@ -14,12 +14,10 @@ Ablauf:
 """
 
 import argparse
+import concurrent.futures as _cf
 import json
-import os
+from contextlib import contextmanager
 from pathlib import Path
-
-# Reduce CUDA fragmentation — must be set before any CUDA call.
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import numpy as np
 import torch
@@ -74,6 +72,30 @@ def get_lora_config() -> LoraConfig:
     )
 
 
+@contextmanager
+def _limit_loading_threads(max_workers: int = 2):
+    """Cap ThreadPoolExecutor during model loading.
+
+    transformers' core_model_loading.py materialises weight tensors on GPU
+    concurrently via a thread pool.  Each tensor lives in bf16 until BnB
+    compresses it to 4-bit.  With the default pool size (20+ threads) the
+    concurrent bf16 tensors can total ~14 GB for a 7B model — exceeding
+    16 GB VRAM.  Limiting to *max_workers* keeps the peak at ~800 MB.
+    """
+    _Orig = _cf.ThreadPoolExecutor
+    _cap = max_workers
+
+    class _Limited(_Orig):
+        def __init__(self, *a, max_workers=None, **kw):
+            super().__init__(*a, max_workers=min(max_workers or _cap, _cap), **kw)
+
+    _cf.ThreadPoolExecutor = _Limited
+    try:
+        yield
+    finally:
+        _cf.ThreadPoolExecutor = _Orig
+
+
 def load_model_and_tokenizer(model_name: str):
     logger.info(f"Lade Modell: {model_name}")
 
@@ -89,20 +111,20 @@ def load_model_and_tokenizer(model_name: str):
     # Left-padding ensures the real content ends at the rightmost position.
     tokenizer.padding_side = "left"
 
-    # Use torch_dtype (not dtype) — BnB reads torch_dtype to decide the
-    # weight loading precision.  The newer "dtype" param may not propagate
-    # to the BnB path, causing a silent fallback to float32 (28 GB → OOM).
-    model = AutoModelForSequenceClassification.from_pretrained(
-        model_name,
-        quantization_config=get_bnb_config(),
-        device_map="auto",
-        torch_dtype=torch.bfloat16,
-        trust_remote_code=True,
-        attn_implementation="eager",
-        num_labels=NUM_LABELS,
-        id2label=ID2LABEL,
-        label2id=LABEL2ID,
-    )
+    # Limit concurrent weight-loading threads to avoid OOM.  See
+    # _limit_loading_threads docstring for details.
+    with _limit_loading_threads(2):
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_name,
+            quantization_config=get_bnb_config(),
+            device_map="auto",
+            dtype=torch.bfloat16,
+            trust_remote_code=True,
+            attn_implementation="eager",
+            num_labels=NUM_LABELS,
+            id2label=ID2LABEL,
+            label2id=LABEL2ID,
+        )
 
     model.config.pad_token_id = tokenizer.pad_token_id
 

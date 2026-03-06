@@ -130,10 +130,15 @@ def create_dataset(
         })
 
     ds = Dataset.from_list(formatted)
-    split = ds.train_test_split(test_size=val_ratio, seed=seed)
+    split = ds.train_test_split(test_size=val_ratio, seed=seed, stratify_by_column="label")
     dd = DatasetDict({"train": split["train"], "validation": split["test"]})
 
-    logger.info(f"Train: {len(dd['train'])} | Validation: {len(dd['validation'])}")
+    # Log label distribution per split
+    for split_name in ["train", "validation"]:
+        labels = dd[split_name]["label"]
+        counts = {ID2LABEL[l]: labels.count(l) for l in set(labels)}
+        logger.info(f"{split_name}: {len(dd[split_name])} Einträge — {counts}")
+
     output_dir.mkdir(parents=True, exist_ok=True)
     dd.save_to_disk(str(output_dir))
     logger.success(f"Dataset gespeichert unter {output_dir}")

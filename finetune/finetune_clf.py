@@ -121,6 +121,7 @@ def get_lora_config() -> LoraConfig:
             "down_proj",
         ],
         bias="none",
+        modules_to_save=["score"],
     )
 
 

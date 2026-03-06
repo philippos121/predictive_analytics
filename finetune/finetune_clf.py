@@ -46,7 +46,7 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
 DEFAULT_OUTPUT = str(_SCRIPT_DIR.parent / "output" / "legal-lora-clf")
 DEFAULT_DATASET = str(_SCRIPT_DIR.parent / "data" / "prepared_dataset_clf")
-MAX_SEQ_LEN = 2048
+MAX_SEQ_LEN = 4096
 NUM_LABELS = 2
 ID2LABEL = {0: "UNTERLIEGEN", 1: "OBSIEGEN"}
 LABEL2ID = {"UNTERLIEGEN": 0, "OBSIEGEN": 1}
@@ -108,10 +108,18 @@ def get_bnb_config() -> BitsAndBytesConfig:
 def get_lora_config() -> LoraConfig:
     return LoraConfig(
         task_type=TaskType.SEQ_CLS,
-        r=16,
-        lora_alpha=32,
+        r=32,
+        lora_alpha=64,
         lora_dropout=0.05,
-        target_modules=["q_proj", "v_proj"],
+        target_modules=[
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
         bias="none",
     )
 
@@ -131,13 +139,21 @@ def load_model_and_tokenizer(model_name: str):
     # Left-padding ensures the real content ends at the rightmost position.
     tokenizer.padding_side = "left"
 
+    # Use flash_attention_2 if available (2-3x faster for long sequences)
+    try:
+        import flash_attn  # noqa: F401
+        attn_impl = "flash_attention_2"
+    except ImportError:
+        attn_impl = "eager"
+    logger.info(f"Attention: {attn_impl}")
+
     model = AutoModelForSequenceClassification.from_pretrained(
         model_name,
         quantization_config=get_bnb_config(),
         device_map="auto",
         torch_dtype=torch.bfloat16,
         trust_remote_code=True,
-        attn_implementation="eager",
+        attn_implementation=attn_impl,
         num_labels=NUM_LABELS,
         id2label=ID2LABEL,
         label2id=LABEL2ID,
@@ -208,6 +224,19 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
 
     train_ds = train_ds.map(tokenize_fn, batched=True, remove_columns=["text"])
     val_ds = val_ds.map(tokenize_fn, batched=True, remove_columns=["text"])
+
+    # Warn about truncation so user knows if texts are too long
+    all_lengths = [len(ids) for ids in train_ds["input_ids"]]
+    truncated = sum(1 for l in all_lengths if l >= MAX_SEQ_LEN)
+    if truncated:
+        logger.warning(
+            f"{truncated}/{len(all_lengths)} Texte auf {MAX_SEQ_LEN} Tokens gekürzt! "
+            f"Vorbringen-Ende geht verloren. Ggf. MAX_SEQ_LEN erhöhen."
+        )
+    logger.info(
+        f"Token-Längen: min={min(all_lengths)}, median={sorted(all_lengths)[len(all_lengths)//2]}, "
+        f"max={max(all_lengths)}, limit={MAX_SEQ_LEN}"
+    )
 
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
 

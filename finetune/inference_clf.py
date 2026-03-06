@@ -53,13 +53,19 @@ def load_model(model_name: str, adapter_path: str):
         tokenizer.pad_token_id = tokenizer.eos_token_id
     tokenizer.padding_side = "left"
 
+    try:
+        import flash_attn  # noqa: F401
+        attn_impl = "flash_attention_2"
+    except ImportError:
+        attn_impl = "eager"
+
     model = AutoModelForSequenceClassification.from_pretrained(
         model_name,
         quantization_config=bnb_config,
         device_map="auto",
-        dtype=torch.bfloat16,
+        torch_dtype=torch.bfloat16,
         trust_remote_code=True,
-        attn_implementation="eager",
+        attn_implementation=attn_impl,
         num_labels=2,
         id2label=ID2LABEL,
         label2id=LABEL2ID,
@@ -99,7 +105,7 @@ def predict_probabilities(
         return_tensors="pt",
         truncation=True,
         max_length=MAX_SEQ_LEN,
-        padding="max_length",
+        padding=True,
     ).to(model.device)
 
     with torch.no_grad():

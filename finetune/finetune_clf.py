@@ -21,6 +21,7 @@ import numpy as np
 import torch
 from datasets import load_from_disk
 from loguru import logger
+import bitsandbytes as bnb
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 from sklearn.metrics import (
     accuracy_score,
@@ -39,6 +40,7 @@ from transformers import (
     TrainingArguments,
     Trainer,
 )
+from torch import nn
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
@@ -48,6 +50,50 @@ MAX_SEQ_LEN = 2048
 NUM_LABELS = 2
 ID2LABEL = {0: "UNTERLIEGEN", 1: "OBSIEGEN"}
 LABEL2ID = {"UNTERLIEGEN": 0, "OBSIEGEN": 1}
+
+
+class WeightedTrainer(Trainer):
+    """Trainer with class-weighted loss and separate LR for classification head."""
+
+    HEAD_LR_MULTIPLIER = 10  # classification head learns 10x faster than LoRA
+
+    def __init__(self, class_weights: torch.Tensor | None = None, **kwargs):
+        super().__init__(**kwargs)
+        self.class_weights = class_weights
+
+    def create_optimizer(self):
+        if self.optimizer is not None:
+            return self.optimizer
+
+        head_params, other_params = [], []
+        for name, param in self.model.named_parameters():
+            if not param.requires_grad:
+                continue
+            if "score" in name:
+                head_params.append(param)
+            else:
+                other_params.append(param)
+
+        base_lr = self.args.learning_rate
+        self.optimizer = bnb.optim.AdamW8bit(
+            [
+                {"params": other_params, "lr": base_lr},
+                {"params": head_params, "lr": base_lr * self.HEAD_LR_MULTIPLIER},
+            ],
+            weight_decay=self.args.weight_decay,
+        )
+        return self.optimizer
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        labels = inputs.pop("labels")
+        outputs = model(**inputs)
+        logits = outputs.logits
+        if self.class_weights is not None:
+            weight = self.class_weights.to(logits.device, dtype=logits.dtype)
+            loss = nn.functional.cross_entropy(logits, labels, weight=weight)
+        else:
+            loss = nn.functional.cross_entropy(logits, labels)
+        return (loss, outputs) if return_outputs else loss
 
 
 def get_bnb_config() -> BitsAndBytesConfig:
@@ -165,8 +211,17 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
 
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
 
+    # Compute class weights (inverse frequency) to handle imbalance
+    train_labels = train_ds["label"]
+    label_counts = np.bincount(train_labels, minlength=NUM_LABELS).astype(float)
+    # Inverse frequency: rarer class gets higher weight
+    class_weights = len(train_labels) / (NUM_LABELS * label_counts + 1e-9)
+    class_weights = torch.tensor(class_weights, dtype=torch.float32)
+    logger.info(f"Class weights: UNTERLIEGEN={class_weights[0]:.2f}, OBSIEGEN={class_weights[1]:.2f}")
+
     # Training config — lighter LoRA allows batch_size=2 with 4096 seq len
-    num_epochs = 3
+    # More epochs for small datasets; early stopping will halt if converged
+    num_epochs = 10 if len(train_ds) < 100 else 3
     batch_size = 1
     grad_accum = 8
 
@@ -216,14 +271,15 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
         remove_unused_columns=False,
     )
 
-    trainer = Trainer(
+    trainer = WeightedTrainer(
+        class_weights=class_weights,
         model=model,
         args=training_args,
         train_dataset=train_ds,
         eval_dataset=val_ds,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=5)],
     )
 
     logger.info("=== Training startet ===")

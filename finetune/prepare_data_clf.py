@@ -13,7 +13,7 @@ import argparse
 import random
 from pathlib import Path
 
-from datasets import Dataset, DatasetDict
+from datasets import ClassLabel, Dataset, DatasetDict, Features, Value
 from loguru import logger
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
@@ -129,7 +129,11 @@ def create_dataset(
             "label": LABEL2ID[e["label"]],
         })
 
-    ds = Dataset.from_list(formatted)
+    features = Features({
+        "text": Value("string"),
+        "label": ClassLabel(names=["UNTERLIEGEN", "OBSIEGEN"]),
+    })
+    ds = Dataset.from_list(formatted, features=features)
     split = ds.train_test_split(test_size=val_ratio, seed=seed, stratify_by_column="label")
     dd = DatasetDict({"train": split["train"], "validation": split["test"]})
 

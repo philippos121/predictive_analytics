@@ -140,16 +140,13 @@ def load_model_and_tokenizer(model_name: str):
     # Left-padding ensures the real content ends at the rightmost position.
     tokenizer.padding_side = "left"
 
-    # flash_attention_2 is required for 4096 seq len — eager is ~4x slower
+    # Pick fastest available attention implementation
     try:
         import flash_attn  # noqa: F401
+        attn_impl = "flash_attention_2"
     except ImportError:
-        raise RuntimeError(
-            "flash-attn ist nicht installiert. Mit 4096 Tokens und eager attention "
-            "dauert Training ~4x länger. Bitte installieren:\n"
-            "  pip install flash-attn --no-build-isolation"
-        )
-    attn_impl = "flash_attention_2"
+        # sdpa is built into PyTorch >=2.0, ~2x faster than eager, works on Windows
+        attn_impl = "sdpa"
     logger.info(f"Attention: {attn_impl}")
 
     model = AutoModelForSequenceClassification.from_pretrained(

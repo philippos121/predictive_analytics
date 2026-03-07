@@ -15,6 +15,7 @@ Ablauf:
 
 import argparse
 import json
+import platform
 from pathlib import Path
 
 import numpy as np
@@ -346,7 +347,7 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
         report_to="none",
         seed=42,
         dataloader_pin_memory=True,
-        dataloader_num_workers=4,
+        dataloader_num_workers=0 if platform.system() == "Windows" else 4,
         tf32=True,
         remove_unused_columns=False,
     )

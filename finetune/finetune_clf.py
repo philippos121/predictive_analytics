@@ -140,12 +140,16 @@ def load_model_and_tokenizer(model_name: str):
     # Left-padding ensures the real content ends at the rightmost position.
     tokenizer.padding_side = "left"
 
-    # Use flash_attention_2 if available (2-3x faster for long sequences)
+    # flash_attention_2 is required for 4096 seq len — eager is ~4x slower
     try:
         import flash_attn  # noqa: F401
-        attn_impl = "flash_attention_2"
     except ImportError:
-        attn_impl = "eager"
+        raise RuntimeError(
+            "flash-attn ist nicht installiert. Mit 4096 Tokens und eager attention "
+            "dauert Training ~4x länger. Bitte installieren:\n"
+            "  pip install flash-attn --no-build-isolation"
+        )
+    attn_impl = "flash_attention_2"
     logger.info(f"Attention: {attn_impl}")
 
     model = AutoModelForSequenceClassification.from_pretrained(
@@ -345,6 +349,8 @@ def train(model_name: str, dataset_path: str, output_dir: str, max_samples: int 
         report_to="none",
         seed=42,
         dataloader_pin_memory=True,
+        dataloader_num_workers=4,
+        tf32=True,
         remove_unused_columns=False,
     )
 
